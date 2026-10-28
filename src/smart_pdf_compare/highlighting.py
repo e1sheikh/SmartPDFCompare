@@ -26,8 +26,24 @@ def _validate_style(style: HighlightStyle) -> None:
         raise ConfigurationError("style must be 'highlight' or 'box'")
 
 
+def _group_rects(rects: list[tuple[float, float, float, float]]) -> list[tuple[float, float, float, float]]:
+    """Merge nearby changed words on one visual line into a readable region."""
+    grouped: list[pymupdf.Rect] = []
+    for coords in sorted(rects, key=lambda item: (item[1], item[0])):
+        current = pymupdf.Rect(coords)
+        if grouped:
+            previous = grouped[-1]
+            same_line = abs((previous.y0 + previous.y1) / 2 - (current.y0 + current.y1) / 2) <= max(previous.height, current.height) * 0.45
+            nearby = current.x0 - previous.x1 <= max(6, max(previous.height, current.height) * 0.75)
+            if same_line and nearby:
+                grouped[-1] = previous | current
+                continue
+        grouped.append(current)
+    return [(rect.x0, rect.y0, rect.x1, rect.y1) for rect in grouped]
+
+
 def _annotate(page: pymupdf.Page, rects: list[tuple[float, float, float, float]], color: tuple[float, float, float], style: HighlightStyle) -> None:
-    for coords in rects:
+    for coords in _group_rects(rects):
         rect = pymupdf.Rect(coords) & page.rect
         if rect.is_empty or rect.is_infinite:
             continue

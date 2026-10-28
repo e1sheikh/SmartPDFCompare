@@ -40,6 +40,14 @@ def test_box_mode_uses_square_annotations_in_all_outputs(pdf_factory, tmp_path):
     assert _annotation_types(outputs.report) == ["Square", "Square"]
 
 
+def test_adjacent_changed_words_are_grouped_into_one_annotation(pdf_factory, tmp_path):
+    old = pdf_factory("old.pdf", ["keep old words keep"])
+    new = pdf_factory("new.pdf", ["keep new words keep"])
+    outputs = highlight_differences(old, new, tmp_path / "out", style="highlight")
+    assert _annotation_types(outputs.original) == ["Highlight"]
+    assert _annotation_types(outputs.revised) == ["Highlight"]
+
+
 @pytest.mark.parametrize("style, expected", [("highlight", "Highlight"), ("box", "Square")])
 @pytest.mark.parametrize("old_pages,new_pages", [(["kept"], ["inserted", "kept"]), (["removed", "kept"], ["kept"])])
 def test_report_handles_unpaired_pages_in_both_modes(pdf_factory, tmp_path, style, expected, old_pages, new_pages):

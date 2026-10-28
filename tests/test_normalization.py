@@ -13,3 +13,8 @@ def test_punctuation_policy_preserves_numbers_and_contractions():
     assert normalize_token("isn't") == "isn't"
     assert normalize_token("Hello!") == "hello!"
     assert normalize_token("Hello!", NormalizationOptions(ignore_punctuation=True)) == "hello"
+
+
+def test_typographic_quotes_can_be_normalized_or_preserved():
+    assert normalize_token("“quoted”") == '"quoted"'
+    assert normalize_token("“quoted”", NormalizationOptions(normalize_quotes=False)) == "“quoted”"

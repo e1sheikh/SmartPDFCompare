@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "smart-pdf-compare"
-version = "0.1.1"
+version = "0.2.0"
 description = "Text-aware PDF comparison, highlighting, and reports."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -38,6 +38,7 @@ Issues = "https://github.com/SmartPDFCompare/SmartPDFCompare/issues"
 
 [project.scripts]
 smart-pdf-compare = "smart_pdf_compare.cli:main"
+smart-pdf-compare-viewer = "smart_pdf_compare.viewer:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/smart_pdf_compare"]

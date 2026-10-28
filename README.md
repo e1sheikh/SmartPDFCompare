@@ -152,6 +152,39 @@ smart-pdf-compare original.pdf revised.pdf \
 | `1` | Changes were found. |
 | `2` | Input, extraction, or configuration error. |
 
+## Visual comparison
+
+Text diffs and visual diffs answer different questions. The text API compares extracted words; the visual API renders pages through PyMuPDF and detects changes to layout, graphics, lines, and images as pixels. It requires no OpenCV, NumPy, or Pillow dependency.
+
+```python
+from smart_pdf_compare import VisualComparisonOptions, compare_visual_pdfs
+
+result = compare_visual_pdfs(
+    "original.pdf",
+    "revised.pdf",
+    options=VisualComparisonOptions(dpi=144, pixel_threshold=8, output_mode="diff_image"),
+    output_dir="visual-output",
+)
+print(result.pages[0].difference_ratio)
+```
+
+Choose `output_mode="side_by_side"` for paired rendered images or `"none"` for metrics only. Visual pages are intentionally paired by index; page-count differences become explicit unmatched-page records. For several PDFs, `compare_visual_documents(paths, reference=0, ...)` compares each non-reference input against the designated reference.
+
+```bash
+smart-pdf-compare original.pdf revised.pdf --visual-only \
+  --visual-mode diff_image --visual-output-dir visual-output --json visual-output/result.json
+```
+
+## Optional desktop viewer
+
+On a desktop Python installation with Tk support, launch a two-pane viewer that reuses the same comparison results, change navigation, and save-highlighting workflow:
+
+```bash
+smart-pdf-compare-viewer original.pdf revised.pdf
+```
+
+The viewer is separate from core imports and creates no window until invoked. It intentionally focuses on PDF comparison; clipboard and Microsoft Word conversion were excluded because they are platform-dependent utilities outside the core library.
+
 ## Limitations
 
 SmartPDFCompare compares the PDF **text layer**, not rendered pixels. It does not perform OCR, visual-diff analysis, or image comparison. If either document has no extractable text, it raises `MissingTextLayerError` instead of falsely claiming that two scanned PDFs are identical. Complex tables and multi-column PDFs can also expose an unreliable reading order from the source PDF.

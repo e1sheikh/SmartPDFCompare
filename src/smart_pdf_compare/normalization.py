@@ -16,17 +16,21 @@ class NormalizationOptions:
 
     ignore_case: bool = True
     ignore_punctuation: bool = False
+    normalize_quotes: bool = True
 
 
 _DASHES = str.maketrans({
     "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-",
 })
+_QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'", "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"'})
 _PUNCTUATION = re.compile(r"[^\w\s'-]", re.UNICODE)
 
 
 def normalize_token(text: str, options: NormalizationOptions = NormalizationOptions()) -> str:
     """Return a comparison key while preserving numeric signs and contractions."""
     value = unicodedata.normalize("NFKC", text).translate(_DASHES).replace("\u00a0", " ").strip()
+    if options.normalize_quotes:
+        value = value.translate(_QUOTES)
     if options.ignore_case:
         value = value.casefold()
     if options.ignore_punctuation:
