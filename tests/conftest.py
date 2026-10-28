@@ -4,10 +4,10 @@ import pymupdf
 import pytest
 
 
-def make_pdf(path: Path, pages: list[str], *, rotate: bool = False) -> Path:
+def make_pdf(path: Path, pages: list[str], *, rotate: bool = False, width: float = 360, height: float = 240) -> Path:
     document = pymupdf.open()
     for text in pages:
-        page = document.new_page(width=360, height=240)
+        page = document.new_page(width=width, height=height)
         if text:
             page.insert_text((36, 72), text, fontsize=12)
         if rotate:
