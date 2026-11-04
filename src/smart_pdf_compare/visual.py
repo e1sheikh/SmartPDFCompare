@@ -148,20 +148,56 @@ def _blank(width: int, height: int, background: tuple[int, int, int]) -> _Raster
 
 
 def _difference_image(left: bytes, right: bytes, width: int, height: int, threshold: int) -> tuple[int, bytes]:
-    changed = 0
-    output = bytearray(len(left))
-    for index in range(0, len(left), 3):
-        delta = max(abs(left[index] - right[index]), abs(left[index + 1] - right[index + 1]), abs(left[index + 2] - right[index + 2]))
-        if delta > threshold:
-            output[index:index + 3] = b"\xff3<"
-            changed += 1
-        else:
+    # FIX 8: Fast path if identical
+    if left == right:
+        # Generate grayscale diff representation for identical rasters
+        output = bytearray(len(left))
+        for index in range(0, len(left), 3):
             shade = (left[index] + left[index + 1] + left[index + 2]) // 9 + 170
             output[index:index + 3] = bytes((shade, shade, shade))
+        return 0, bytes(output)
+
+    changed = 0
+    output = bytearray(len(left))
+    row_bytes = width * 3
+
+    # Row-level fast path comparison
+    for row in range(height):
+        row_start = row * row_bytes
+        row_end = row_start + row_bytes
+        left_row = left[row_start:row_end]
+        right_row = right[row_start:row_end]
+
+        if left_row == right_row:
+            # Row is identical, copy grayscale background representation
+            for index in range(row_start, row_end, 3):
+                shade = (left[index] + left[index + 1] + left[index + 2]) // 9 + 170
+                output[index:index + 3] = bytes((shade, shade, shade))
+        else:
+            # Row differs, process per-pixel logic for this row
+            for index in range(row_start, row_end, 3):
+                delta = max(
+                    abs(left[index] - right[index]),
+                    abs(left[index + 1] - right[index + 1]),
+                    abs(left[index + 2] - right[index + 2]),
+                )
+                if delta > threshold:
+                    output[index:index + 3] = b"\xff3<"
+                    changed += 1
+                else:
+                    shade = (left[index] + left[index + 1] + left[index + 2]) // 9 + 170
+                    output[index:index + 3] = bytes((shade, shade, shade))
+
     return changed, bytes(output)
 
 
-def _compare_pair(old_pdf: str | Path, new_pdf: str | Path, options: VisualComparisonOptions, output_dir: Path | None, prefix: str) -> VisualComparisonResult:
+def _compare_pair(
+    old_pdf: str | Path,
+    new_pdf: str | Path,
+    options: VisualComparisonOptions,
+    output_dir: Path | None,
+    prefix: str,
+) -> VisualComparisonResult:
     pages: list[VisualPageResult] = []
     with open_pdf(old_pdf) as old_document, open_pdf(new_pdf) as new_document:
         page_count = max(old_document.page_count, new_document.page_count)
@@ -185,28 +221,41 @@ def _compare_pair(old_pdf: str | Path, new_pdf: str | Path, options: VisualCompa
                     diff = output_dir / f"{prefix}-page-{index + 1:04d}-diff.png"
                     _save_png(diff, image.width, image.height, diff_samples)
                     diff_path = str(diff)
-                pages.append(VisualPageResult(
-                    index + 1 if old_page else None,
-                    index + 1 if new_page else None,
-                    (image.width, image.height) if old_page else None,
-                    (image.width, image.height) if new_page else None,
-                    True,
-                    changed_pixels=changed,
-                    total_pixels=image.width * image.height,
-                    difference_ratio=changed / (image.width * image.height),
-                    side_by_side_path=side_path,
-                    diff_image_path=diff_path,
-                ))
+                pages.append(
+                    VisualPageResult(
+                        index + 1 if old_page else None,
+                        index + 1 if new_page else None,
+                        (image.width, image.height) if old_page else None,
+                        (image.width, image.height) if new_page else None,
+                        True,
+                        changed_pixels=changed,
+                        total_pixels=image.width * image.height,
+                        difference_ratio=changed / (image.width * image.height),
+                        side_by_side_path=side_path,
+                        diff_image_path=diff_path,
+                    )
+                )
                 continue
             old_image, new_image = _render(old_page, options.dpi), _render(new_page, options.dpi)
-            width, height = max(old_image.width, new_image.width), max(old_image.height, new_image.height)
-            old_canvas = _canvas(old_image, width, height, options.background)
-            new_canvas = _canvas(new_image, width, height, options.background)
-            changed, diff_samples = _difference_image(old_canvas, new_canvas, width, height, options.pixel_threshold)
-            total = width * height
-            ratio = changed / total
-            dimension_mismatch = (old_image.width, old_image.height) != (new_image.width, new_image.height)
-            different = dimension_mismatch or (changed >= options.min_changed_pixels and ratio >= options.min_difference_ratio)
+
+            # Fast path check: if rasters are identical
+            if old_image.width == new_image.width and old_image.height == new_image.height and old_image.samples == new_image.samples:
+                width, height = old_image.width, old_image.height
+                changed, diff_samples = 0, bytes(0) # Not used if output_mode == none
+                total = width * height
+                ratio = 0.0
+                dimension_mismatch = False
+                different = False
+            else:
+                width, height = max(old_image.width, new_image.width), max(old_image.height, new_image.height)
+                old_canvas = _canvas(old_image, width, height, options.background)
+                new_canvas = _canvas(new_image, width, height, options.background)
+                changed, diff_samples = _difference_image(old_canvas, new_canvas, width, height, options.pixel_threshold)
+                total = width * height
+                ratio = changed / total
+                dimension_mismatch = (old_image.width, old_image.height) != (new_image.width, new_image.height)
+                different = dimension_mismatch or (changed >= options.min_changed_pixels and ratio >= options.min_difference_ratio)
+
             side_path = diff_path = None
             if output_dir and options.output_mode == "side_by_side":
                 side = output_dir / f"{prefix}-page-{index + 1:04d}-side-by-side.png"
@@ -217,24 +266,40 @@ def _compare_pair(old_pdf: str | Path, new_pdf: str | Path, options: VisualCompa
                 diff = output_dir / f"{prefix}-page-{index + 1:04d}-diff.png"
                 _save_png(diff, width, height, diff_samples)
                 diff_path = str(diff)
-            pages.append(VisualPageResult(
-                index + 1,
-                index + 1,
-                (old_image.width, old_image.height),
-                (new_image.width, new_image.height),
-                different,
-                dimension_mismatch,
-                changed,
-                total,
-                ratio,
-                side_path,
-                diff_path,
-            ))
+
+            pages.append(
+                VisualPageResult(
+                    index + 1,
+                    index + 1,
+                    (old_image.width, old_image.height),
+                    (new_image.width, new_image.height),
+                    different,
+                    dimension_mismatch,
+                    changed,
+                    total,
+                    ratio,
+                    side_path,
+                    diff_path,
+                )
+            )
+
     warning = "Visual pages are paired by index; text-aware page alignment is not applied."
-    return VisualComparisonResult(str(Path(old_pdf)), str(Path(new_pdf)), not any(page.visually_different for page in pages), pages, [warning])
+    return VisualComparisonResult(
+        str(Path(old_pdf)),
+        str(Path(new_pdf)),
+        not any(page.visually_different for page in pages),
+        pages,
+        [warning],
+    )
 
 
-def compare_visual_pdfs(old_pdf: str | Path, new_pdf: str | Path, *, options: VisualComparisonOptions | None = None, output_dir: str | Path | None = None) -> VisualComparisonResult:
+def compare_visual_pdfs(
+    old_pdf: str | Path,
+    new_pdf: str | Path,
+    *,
+    options: VisualComparisonOptions | None = None,
+    output_dir: str | Path | None = None,
+) -> VisualComparisonResult:
     """Compare rendered pages of two PDFs and optionally write PNG artifacts."""
     settings = options or VisualComparisonOptions()
     _validate(settings)
@@ -246,7 +311,13 @@ def compare_visual_pdfs(old_pdf: str | Path, new_pdf: str | Path, *, options: Vi
     return _compare_pair(old_pdf, new_pdf, settings, target, "visual")
 
 
-def compare_visual_documents(pdf_paths: Sequence[str | Path], *, reference: int = 0, options: VisualComparisonOptions | None = None, output_dir: str | Path | None = None) -> VisualBatchResult:
+def compare_visual_documents(
+    pdf_paths: Sequence[str | Path],
+    *,
+    reference: int = 0,
+    options: VisualComparisonOptions | None = None,
+    output_dir: str | Path | None = None,
+) -> VisualBatchResult:
     """Compare every document after ``reference`` against the designated PDF.
 
     This reference-based API avoids ambiguous all-pairs output when callers
