@@ -19,22 +19,79 @@ class NormalizationOptions:
     normalize_quotes: bool = True
 
 
+# Dash/minus variants to map to ASCII "-"
 _DASHES = str.maketrans({
-    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-",
+    "‐": "-",  # hyphen
+    "‑": "-",  # non-breaking hyphen
+    "‒": "-",  # figure dash
+    "–": "-",  # en dash
+    "—": "-",  # em dash
+    "―": "-",  # horizontal bar
+    "−": "-",  # minus sign
+    "﹘": "-",  # small em dash
+    "﹣": "-",  # small hyphen-minus
+    "－": "-",  # fullwidth hyphen-minus
 })
-_QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'", "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"'})
-_PUNCTUATION = re.compile(r"[^\w\s'-]", re.UNICODE)
+
+# Curly quotes/apostrophes to ASCII
+_QUOTES = str.maketrans({
+    "‘": "'",  # left single quotation mark
+    "’": "'",  # right single quotation mark
+    "‚": "'",  # single low-9 quotation mark
+    "‛": "'",  # single high-reversed-9 quotation mark
+    "“": '"',  # left double quotation mark
+    "”": '"',  # right double quotation mark
+    "„": '"',  # double low-9 quotation mark
+    "‟": '"',  # double high-reversed-9 quotation mark
+})
+
+# Zero-width and soft hyphen characters to remove
+_ZERO_WIDTH_CHARS = {
+    "­",   # soft hyphen
+    "​",   # zero width space
+    "‌",   # zero width non-joiner
+    "‍",   # zero width joiner
+    "⁠",   # word joiner
+    "﻿",   # zero width no-break space (BOM)
+}
+
+# Pattern for punctuation that is NOT inside numbers/words
+# We strip punctuation at edges, but preserve:
+# - Decimal points inside numbers (e.g., 1.2)
+# - Thousands separators inside numbers (e.g., 1,000)
+# - Signs at start of numbers (e.g., -80, +80)
+# - Apostrophes inside words (e.g., isn't)
+_PUNCTUATION_EDGE = re.compile(r"^[^\w\s'-]+|[^\w\s'-]+$", re.UNICODE)
 
 
 def normalize_token(text: str, options: NormalizationOptions = NormalizationOptions()) -> str:
     """Return a comparison key while preserving numeric signs and contractions."""
-    value = unicodedata.normalize("NFKC", text).translate(_DASHES).replace("\u00a0", " ").strip()
+    # NFKC normalization, then handle special characters
+    value = unicodedata.normalize("NFKC", text)
+
+    # Remove zero-width and soft hyphen characters
+    if _ZERO_WIDTH_CHARS:
+        value = "".join(ch for ch in value if ch not in _ZERO_WIDTH_CHARS)
+
+    # Replace NBSP with regular space
+    value = value.replace(" ", " ")
+
+    # Map dash/minus variants to ASCII "-"
+    value = value.translate(_DASHES)
+
+    # Map curly quotes/apostrophes to ASCII if enabled
     if options.normalize_quotes:
         value = value.translate(_QUOTES)
+
+    value = value.strip()
+
     if options.ignore_case:
         value = value.casefold()
+
     if options.ignore_punctuation:
-        value = _PUNCTUATION.sub("", value)
+        # Strip punctuation only at word edges, not inside numbers/words
+        value = _PUNCTUATION_EDGE.sub("", value)
+
     return value
 
 

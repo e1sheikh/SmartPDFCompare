@@ -43,11 +43,15 @@ def _group_rects(rects: list[tuple[float, float, float, float]]) -> list[tuple[f
 
 
 def _annotate(page: pymupdf.Page, rects: list[tuple[float, float, float, float]], color: tuple[float, float, float], style: HighlightStyle) -> None:
+    """Add annotations to a page. Rects are in the page's unrotated coordinate space."""
     for coords in _group_rects(rects):
-        rect = pymupdf.Rect(coords) & page.rect
-        if rect.is_empty or rect.is_infinite:
+        rect = pymupdf.Rect(coords)
+        # Validate against unrotated bounds (page.rect is rotated, use derotation_matrix)
+        unrotated_bounds = page.rect * page.derotation_matrix
+        clipped = rect & unrotated_bounds
+        if clipped.is_empty or clipped.is_infinite:
             continue
-        annot = page.add_highlight_annot(rect) if style == "highlight" else page.add_rect_annot(rect)
+        annot = page.add_highlight_annot(clipped) if style == "highlight" else page.add_rect_annot(clipped)
         annot.set_colors(stroke=color)
         if style == "box":
             annot.set_border(width=1.2)
@@ -70,65 +74,131 @@ def _display_rect(source: pymupdf.Page, target: pymupdf.Rect) -> pymupdf.Rect:
 def _report_rects(source: pymupdf.Page, rects: list[tuple[float, float, float, float]], target: pymupdf.Rect) -> list[tuple[float, float, float, float]]:
     """Map source word coordinates into a source page's report placement.
 
-    ``show_pdf_page`` retains the source page's text coordinate space while
-    placing its visual page rectangle. Its own page-rotation handling must not
-    be applied a second time here: word rectangles from ``get_text('words')``
-    therefore map directly through the fitted placement. This also keeps
-    annotations aligned for rotated and differently sized source pages.
+    Word rectangles from ``get_text('words')`` are in the unrotated coordinate space.
+    The source page is placed on the report page via a scratch document with rotation=0,
+    then rotated to match the visible orientation. We must map the unrotated word
+    rectangles through the source page's rotation matrix, then scale/translate to the
+    report placement.
     """
     source_rect = source.rect
     display = _display_rect(source, target)
     scale = display.width / source_rect.width
+
+    # The visible rotation of the source page
+    rot = source.rotation
+    rot_matrix = source.rotation_matrix
+
     mapped: list[tuple[float, float, float, float]] = []
     for coords in rects:
         source_word = pymupdf.Rect(coords) & source_rect
         if source_word.is_empty or source_word.is_infinite:
             continue
+        # Map from unrotated to visible coordinates: apply rotation matrix
+        rotated_word = source_word * rot_matrix
+        # Now scale and translate to the report placement
         mapped.append((
-            display.x0 + (source_word.x0 - source_rect.x0) * scale,
-            display.y0 + (source_word.y0 - source_rect.y0) * scale,
-            display.x0 + (source_word.x1 - source_rect.x0) * scale,
-            display.y0 + (source_word.y1 - source_rect.y0) * scale,
+            display.x0 + (rotated_word.x0 - source_rect.x0) * scale,
+            display.y0 + (rotated_word.y0 - source_rect.y0) * scale,
+            display.x0 + (rotated_word.x1 - source_rect.x0) * scale,
+            display.y0 + (rotated_word.y1 - source_rect.y0) * scale,
         ))
     return mapped
 
 
-def highlight_differences(old_pdf: str | Path, new_pdf: str | Path, output_dir: str | Path, *, result: ComparisonResult | None = None, options: ComparisonOptions | None = None, style: HighlightStyle = "highlight", include_report: bool = False, removed_color: tuple[float, float, float] = (1, 0.2, 0.2), added_color: tuple[float, float, float] = (0.1, 0.65, 0.2)) -> HighlightOutputs:
+def highlight_differences(
+    old_pdf: str | Path,
+    new_pdf: str | Path,
+    output_dir: str | Path,
+    *,
+    result: ComparisonResult | None = None,
+    options: ComparisonOptions | None = None,
+    style: HighlightStyle = "highlight",
+    include_report: bool = False,
+    removed_color: tuple[float, float, float] = (1, 0.2, 0.2),
+    added_color: tuple[float, float, float] = (0.1, 0.65, 0.2),
+    overwrite: bool = False,
+) -> HighlightOutputs:
     """Write highlighted copies without modifying either source PDF."""
     _validate_style(style)
     comparison = result or compare_pdfs(old_pdf, new_pdf, options=options)
-    target = Path(output_dir); target.mkdir(parents=True, exist_ok=True)
+    target = Path(output_dir)
+    target.mkdir(parents=True, exist_ok=True)
     old_output, new_output = target / "original_highlighted.pdf", target / "revised_highlighted.pdf"
+    report_output = target / "difference_report.pdf"
+
+    # Check overwrite
+    for path in (old_output, new_output, report_output if include_report else None):
+        if path and path.exists() and not overwrite:
+            raise FileExistsError(f"Output file already exists: {path}. Use overwrite=True to replace.")
+        if path and path.resolve() in (Path(old_pdf).resolve(), Path(new_pdf).resolve()):
+            raise FileExistsError(f"Refusing to overwrite input file: {path}")
+
+    def _safe_save(document: pymupdf.Document, output_path: Path) -> None:
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(dir=output_path.parent, delete=False, suffix=".tmp") as tmp:
+            tmp_path = Path(tmp.name)
+        try:
+            document.save(tmp_path, garbage=4, deflate=True)
+            os.replace(tmp_path, output_path)
+        except BaseException:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+            raise
+
     with pymupdf.open(old_pdf) as old_document, pymupdf.open(new_pdf) as new_document:
         for mark in comparison._markup:
             if mark.old_page is not None:
                 _annotate(old_document[mark.old_page], mark.old_rects, removed_color, style)
             if mark.new_page is not None:
                 _annotate(new_document[mark.new_page], mark.new_rects, added_color, style)
-        old_document.save(old_output, garbage=4, deflate=True)
-        new_document.save(new_output, garbage=4, deflate=True)
+        _safe_save(old_document, old_output)
+        _safe_save(new_document, new_output)
+
     # Reopen output now: callers never receive a corrupt path silently.
     with pymupdf.open(old_output), pymupdf.open(new_output):
         pass
+
     report = create_side_by_side_report(
         old_pdf,
         new_pdf,
         comparison,
-        target / "difference_report.pdf",
+        report_output,
         removed_color,
         added_color,
         style=style,
+        overwrite=overwrite,
     ) if include_report and not comparison.is_identical else None
     return HighlightOutputs(old_output, new_output, report)
 
 
-def create_side_by_side_report(old_pdf: str | Path, new_pdf: str | Path, result: ComparisonResult, output_path: str | Path, removed_color: tuple[float, float, float] = (1, 0.2, 0.2), added_color: tuple[float, float, float] = (0.1, 0.65, 0.2), *, style: HighlightStyle = "highlight") -> Path | None:
+def create_side_by_side_report(
+    old_pdf: str | Path,
+    new_pdf: str | Path,
+    result: ComparisonResult,
+    output_path: str | Path,
+    removed_color: tuple[float, float, float] = (1, 0.2, 0.2),
+    added_color: tuple[float, float, float] = (0.1, 0.65, 0.2),
+    *,
+    style: HighlightStyle = "highlight",
+    overwrite: bool = False,
+) -> Path | None:
     """Create a report containing only changed page pairs; return None if equal."""
     _validate_style(style)
     changed = [mark for mark in result._markup if mark.changed]
     if not changed:
         return None
-    destination = Path(output_path); destination.parent.mkdir(parents=True, exist_ok=True)
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    if destination.exists() and not overwrite:
+        raise FileExistsError(f"Output file already exists: {destination}. Use overwrite=True to replace.")
+    if destination.resolve() in (Path(old_pdf).resolve(), Path(new_pdf).resolve()):
+        raise FileExistsError(f"Refusing to overwrite input file: {destination}")
+
     report = pymupdf.open()
     try:
         with pymupdf.open(old_pdf) as old_document, pymupdf.open(new_pdf) as new_document:
@@ -143,15 +213,28 @@ def create_side_by_side_report(old_pdf: str | Path, new_pdf: str | Path, result:
                 right = pymupdf.Rect(old_width, 28, old_width + new_width, height)
                 page.insert_text((6, 18), f"Original page {mark.old_page + 1}" if old_page else "Original: no matching page", fontsize=10)
                 page.insert_text((old_width + 6, 18), f"Revised page {mark.new_page + 1}" if new_page else "Revised: no matching page", fontsize=10)
+
                 if old_page:
-                    page.show_pdf_page(left, old_document, mark.old_page)
+                    # Draw through scratch document to handle rotation properly
+                    with pymupdf.open() as scratch:
+                        scratch.insert_pdf(old_document, from_page=mark.old_page, to_page=mark.old_page)
+                        scratch[0].set_rotation(0)
+                        # The area has the visible (rotated) width/height
+                        page.show_pdf_page(left, scratch, 0, rotate=(360 - old_page.rotation) % 360)
                     _annotate(page, _report_rects(old_page, mark.old_rects, left), removed_color, style)
+
                 if new_page:
-                    page.show_pdf_page(right, new_document, mark.new_page)
+                    # Draw through scratch document to handle rotation properly
+                    with pymupdf.open() as scratch:
+                        scratch.insert_pdf(new_document, from_page=mark.new_page, to_page=mark.new_page)
+                        scratch[0].set_rotation(0)
+                        page.show_pdf_page(right, scratch, 0, rotate=(360 - new_page.rotation) % 360)
                     _annotate(page, _report_rects(new_page, mark.new_rects, right), added_color, style)
-        report.save(destination, garbage=4, deflate=True)
+
+        _safe_save(report, destination)
     finally:
         report.close()
+
     with pymupdf.open(destination):
         pass
     return destination
