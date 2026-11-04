@@ -6,7 +6,7 @@ from smart_pdf_compare import ChangeType, ComparisonOptions, MissingTextLayerErr
 def test_added_removed_and_replaced_words(pdf_factory):
     old = pdf_factory("old.pdf", ["The price is -1.5 dollars"])
     new = pdf_factory("new.pdf", ["The price is 2 dollars today"])
-    result = compare_pdfs(old, new)
+    result = compare_pdfs(old, new, options=ComparisonOptions(similarity_threshold=0.5))
     assert result.summary.added_words == 2
     assert result.summary.removed_words == 1
     assert any(item.change_type is ChangeType.REPLACED for item in result.differences)

@@ -241,7 +241,11 @@ def _compare_pair(
             # Fast path check: if rasters are identical
             if old_image.width == new_image.width and old_image.height == new_image.height and old_image.samples == new_image.samples:
                 width, height = old_image.width, old_image.height
-                changed, diff_samples = 0, bytes(0) # Not used if output_mode == none
+                # Generate proper diff samples for output modes that need them
+                if options.output_mode in ("side_by_side", "diff_image"):
+                    changed, diff_samples = _difference_image(old_image.samples, new_image.samples, width, height, options.pixel_threshold)
+                else:
+                    changed, diff_samples = 0, bytes(0)
                 total = width * height
                 ratio = 0.0
                 dimension_mismatch = False
