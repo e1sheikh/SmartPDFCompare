@@ -124,7 +124,6 @@ result = compare_pdfs(
         lookahead=5,
         max_differences=1_000,
     ),
-)
 ```
 
 | Strategy | Best for | Trade-off |
@@ -149,8 +148,9 @@ smart-pdf-compare original.pdf revised.pdf \
 | Exit code | Meaning |
 | --- | --- |
 | `0` | Textually identical under the chosen policy. |
-| `1` | Changes were found. |
+| `1` | Differences were found. |
 | `2` | Input, extraction, or configuration error. |
+| `3` | Comparison unreliable: one or both documents lack extractable text layer. |
 
 ## Visual comparison
 
@@ -187,7 +187,11 @@ The viewer is separate from core imports and creates no window until invoked. It
 
 ## Limitations
 
-SmartPDFCompare compares the PDF **text layer**, not rendered pixels. It does not perform OCR, visual-diff analysis, or image comparison. If either document has no extractable text, it raises `MissingTextLayerError` instead of falsely claiming that two scanned PDFs are identical. Complex tables and multi-column PDFs can also expose an unreliable reading order from the source PDF.
+SmartPDFCompare compares the PDF **text layer**, not rendered pixels. It does not perform OCR, visual-diff analysis, or image comparison.
+
+If either document has no extractable text, the comparison returns a `ComparisonResult` with `reliable=False` and a warning naming the document(s). The CLI exits with code 3 to signal an unreliable comparison (exit code 3) so no information is lost and the user is explicitly warned that OCR and visual comparison are not supported.
+
+Complex tables and multi-column PDFs can expose an unreliable reading order from the source PDF. The `sort_words` option (default `False` in `ComparisonOptions`) preserves native block/line reading order; set to `True` if column-interleaved order is preferred, at the cost of confusing context lines in hunks.
 
 PyMuPDF is available under [AGPL or commercial terms](https://pymupdf.readthedocs.io/en/latest/about.html#license-and-copyright). Confirm that its license is appropriate for your use case.
 
@@ -204,7 +208,7 @@ Read the [contribution guide](CONTRIBUTING.md), [public API](docs/api.md), [arch
 
 ## License
 
-SmartPDFCompare’s own source code is licensed under the [MIT License](LICENSE). Its PyMuPDF dependency has separate licensing, described above.
+SmartPDFCompare's own source code is licensed under the [MIT License](LICENSE). Its PyMuPDF dependency has separate licensing, described above.
 
 ---
 
