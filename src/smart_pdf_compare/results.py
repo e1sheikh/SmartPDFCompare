@@ -59,6 +59,7 @@ class ComparisonResult:
     is_identical: bool
     summary: ComparisonSummary
     differences: list[Difference]
+    reliable: bool = True
     warnings: list[str] = field(default_factory=list)
     truncated: bool = False
     _markup: list[_PageMarkup] = field(default_factory=list, repr=False)
@@ -67,6 +68,7 @@ class ComparisonResult:
         """Return JSON-compatible data without internal geometry."""
         return {
             "is_identical": self.is_identical,
+            "reliable": self.reliable,
             "summary": asdict(self.summary),
             "differences": [{**asdict(item), "change_type": item.change_type.value} for item in self.differences],
             "warnings": list(self.warnings),

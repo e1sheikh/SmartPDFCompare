@@ -19,11 +19,24 @@ def test_identical_after_case_normalization(pdf_factory):
     assert compare_pdfs(old, new).is_identical
 
 
-def test_scanned_or_textless_documents_raise(pdf_factory):
+def test_scanned_or_textless_documents_return_unreliable(pdf_factory):
     old = pdf_factory("old.pdf", [""])
     new = pdf_factory("new.pdf", [""])
-    with pytest.raises(MissingTextLayerError):
-        compare_pdfs(old, new)
+    result = compare_pdfs(old, new)
+    assert result.reliable is False
+    assert result.is_identical is False
+    assert result.summary.differences == 0
+    assert len(result.warnings) > 0
+    assert "no extractable text" in result.warnings[0].lower()
+
+
+def test_one_document_textless_returns_unreliable(pdf_factory):
+    old = pdf_factory("old.pdf", ["some text here"])
+    new = pdf_factory("new.pdf", [""])
+    result = compare_pdfs(old, new)
+    assert result.reliable is False
+    assert result.is_identical is False
+    assert len(result.warnings) > 0
 
 
 def test_result_collection_can_be_truncated_but_counts_are_not(pdf_factory):
