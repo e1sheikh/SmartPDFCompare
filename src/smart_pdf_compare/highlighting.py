@@ -21,6 +21,23 @@ class HighlightOutputs:
     report: Path | None = None
 
 
+def _safe_save(document: pymupdf.Document, output_path: Path) -> None:
+    import tempfile
+    import os
+    with tempfile.NamedTemporaryFile(dir=output_path.parent, delete=False, suffix=".tmp") as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        document.save(tmp_path, garbage=4, deflate=True)
+        os.replace(tmp_path, output_path)
+    except BaseException:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        raise
+
+
 def _validate_style(style: HighlightStyle) -> None:
     if style not in ("highlight", "box"):
         raise ConfigurationError("style must be 'highlight' or 'box'")
@@ -132,22 +149,6 @@ def highlight_differences(
             raise FileExistsError(f"Output file already exists: {path}. Use overwrite=True to replace.")
         if path and path.resolve() in (Path(old_pdf).resolve(), Path(new_pdf).resolve()):
             raise FileExistsError(f"Refusing to overwrite input file: {path}")
-
-    def _safe_save(document: pymupdf.Document, output_path: Path) -> None:
-        import tempfile
-        import os
-        with tempfile.NamedTemporaryFile(dir=output_path.parent, delete=False, suffix=".tmp") as tmp:
-            tmp_path = Path(tmp.name)
-        try:
-            document.save(tmp_path, garbage=4, deflate=True)
-            os.replace(tmp_path, output_path)
-        except BaseException:
-            if tmp_path.exists():
-                try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass
-            raise
 
     with pymupdf.open(old_pdf) as old_document, pymupdf.open(new_pdf) as new_document:
         for mark in comparison._markup:

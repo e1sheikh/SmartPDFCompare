@@ -72,7 +72,7 @@ def compare_pdfs(
             reliable=False,
             warnings=warnings,
             truncated=False,
-            markup=[],
+            _markup=[],
         )
 
     pairs = align_pages(
@@ -173,6 +173,6 @@ def compare_pdfs(
         differences=visible,
         warnings=warnings,
         truncated=truncated,
-        markup=markup,
+        _markup=markup,
         reliable=reliable,
     )

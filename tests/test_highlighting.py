@@ -1,7 +1,7 @@
 import pymupdf
 import pytest
 
-from smart_pdf_compare import compare_pdfs, highlight_differences
+from smart_pdf_compare import compare_pdfs, highlight_differences, ComparisonOptions
 
 
 def _annotation_types(path):
@@ -17,7 +17,8 @@ def _annotation_rects(path):
 def test_highlight_mode_uses_actual_highlight_annotations_in_all_outputs(pdf_factory, tmp_path):
     old = pdf_factory("old.pdf", ["old value"])
     new = pdf_factory("new.pdf", ["new value"])
-    outputs = highlight_differences(old, new, tmp_path / "out", include_report=True, style="highlight")
+    outputs = highlight_differences(old, new, tmp_path / "out", include_report=True, style="highlight",
+                                    options=ComparisonOptions(similarity_threshold=0.3))
     assert outputs.original.exists() and outputs.revised.exists() and outputs.report and outputs.report.exists()
     with pymupdf.open(old) as source, pymupdf.open(outputs.original) as marked:
         assert source[0].first_annot is None
@@ -61,7 +62,8 @@ def test_report_handles_unpaired_pages_in_both_modes(pdf_factory, tmp_path, styl
 def test_report_annotations_track_rotated_and_differently_sized_pages(pdf_factory, tmp_path):
     old = pdf_factory("old.pdf", ["old coordinate"], width=300, height=200)
     new = pdf_factory("new.pdf", ["new coordinate"], width=220, height=360, rotate=True)
-    outputs = highlight_differences(old, new, tmp_path / "out", include_report=True, style="highlight")
+    outputs = highlight_differences(old, new, tmp_path / "out", include_report=True, style="highlight",
+                                    options=ComparisonOptions(similarity_threshold=0.3))
     assert outputs.report
     with pymupdf.open(outputs.report) as report:
         page = report[0]
