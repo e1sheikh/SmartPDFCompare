@@ -3,9 +3,11 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Literal, Optional, Sequence
 
 from .exceptions import ConfigurationError
+from .normalization import NormalizationOptions, normalize_token
 from .extraction import ExtractedPage
 
 AlignmentStrategy = Literal["content", "index", "sequential"]
@@ -19,28 +21,37 @@ class PagePair:
 
 
 class FenwickTree:
-    """Max Fenwick tree for Weighted LIS."""
+    """Max Fenwick tree for Weighted LIS with parent tracking.
+
+    Each node stores ``(value, pair_index)`` so that the LIS chain can be
+    reconstructed in O(E log E) time instead of O(E²).
+    """
+
     def __init__(self, size: int):
         self.size = size
-        self.tree = [0.0] * (size + 1)
+        # Each element is (max_dp_value, pair_index_that_achieved_it)
+        self.tree: list[tuple[float, int]] = [(0.0, -1)] * (size + 1)
 
-    def update(self, idx: int, val: float) -> None:
-        # 1-based index
+    def update(self, idx: int, val: float, pair_idx: int) -> None:
+        """Update position *idx* with *(val, pair_idx)* if *val* is larger."""
         i = idx + 1
         while i <= self.size:
-            if val > self.tree[i]:
-                self.tree[i] = val
+            if val > self.tree[i][0]:
+                self.tree[i] = (val, pair_idx)
             i += i & (-i)
 
-    def query(self, idx: int) -> float:
-        # max in [0..idx]
+    def query(self, idx: int) -> tuple[float, int]:
+        """Return ``(max_value, pair_index)`` for the prefix ``[0 .. idx]``."""
         i = idx + 1
-        res = 0.0
+        res_val = 0.0
+        res_idx = -1
         while i > 0:
-            if self.tree[i] > res:
-                res = self.tree[i]
+            stored_val, stored_idx = self.tree[i]
+            if stored_val > res_val:
+                res_val = stored_val
+                res_idx = stored_idx
             i -= i & (-i)
-        return res
+        return res_val, res_idx
 
 
 def _jaccard_similarity(set_a: set[str], set_b: set[str]) -> float:
@@ -48,13 +59,45 @@ def _jaccard_similarity(set_a: set[str], set_b: set[str]) -> float:
         return 1.0
     if not set_a or not set_b:
         return 0.0
-    intersection = len(set_a & set_b)
-    union = len(set_a | set_b)
-    return intersection / union if union > 0 else 0.0
+    intersection = set_a & set_b
+    union = set_a | set_b
+    return len(intersection) / len(union) if union else 0.0
+
+
+def _page_word_list(page: ExtractedPage) -> list[str]:
+    """Return the ordered list of normalized words for a page."""
+    return [w.normalized for w in page.words if w.normalized]
 
 
 def _page_word_set(page: ExtractedPage) -> set[str]:
-    return {word.normalized for word in page.words if word.normalized}
+    # Return set of normalized words for page
+    return {w.normalized for w in page.words if w.normalized}
+
+
+def _page_similarity(
+    set_a: set[str],
+    set_b: set[str],
+    words_a: list[str],
+    words_b: list[str],
+) -> float:
+    """Weighted similarity combining Jaccard (set overlap) with sequence ratio.
+
+    Jaccard handles vocabulary overlap; the sequence component captures word
+    order so that pages with identical vocabularies but different arrangements
+    receive lower scores.  The blend is 60 % Jaccard + 40 % sequence ratio.
+    """
+    jac = _jaccard_similarity(set_a, set_b)
+    if jac == 0.0:
+        return 0.0
+    # Compute lightweight sequence ratio only when Jaccard is non-trivial
+    if not words_a or not words_b:
+        return jac
+    # SequenceMatcher is expensive for very long pages; cap input length
+    max_words = 200
+    seq_a = words_a[:max_words]
+    seq_b = words_b[:max_words]
+    seq_ratio = SequenceMatcher(None, seq_a, seq_b, autojunk=False).ratio()
+    return 0.6 * jac + 0.4 * seq_ratio
 
 
 def align_pages(
@@ -99,9 +142,11 @@ def _content(old: Sequence[ExtractedPage], new: Sequence[ExtractedPage], thresho
             matched[i] = j
             used.add(j)
 
-    # Pre-compute word sets for Jaccard
+    # Pre-compute word sets and word lists
     old_sets = [_page_word_set(p) for p in old]
     new_sets = [_page_word_set(p) for p in new]
+    old_words = [_page_word_list(p) for p in old]
+    new_words = [_page_word_list(p) for p in new]
 
     # 2. Candidate generation for unmatched pages
     unmatched_old = [i for i in range(n) if i not in matched]
@@ -132,6 +177,9 @@ def _content(old: Sequence[ExtractedPage], new: Sequence[ExtractedPage], thresho
                 if df[w] <= max_df:
                     rare_words_index[w].append(j)
 
+        # Adaptive window: scale with document size difference
+        window = max(10, abs(n - m) + 5)
+
         for i in unmatched_old:
             cand_j: set[int] = set()
             # Inverted index search
@@ -141,15 +189,15 @@ def _content(old: Sequence[ExtractedPage], new: Sequence[ExtractedPage], thresho
                         if j not in used:
                             cand_j.add(j)
 
-            # Small index window (e.g. +/- 10 around i)
-            window_start = max(0, i - 10)
-            window_end = min(m, i + 10)
+            # Adaptive index window around position i
+            window_start = max(0, i - window)
+            window_end = min(m, i + window)
             for j in range(window_start, window_end):
                 if j not in used:
                     cand_j.add(j)
 
-            # Cap candidates per page to 25
-            cand_j_list = list(cand_j)[:25]
+            # Sort candidates deterministically, prioritize closeness
+            cand_j_list = sorted(cand_j, key=lambda j: (abs(i - j), j))[:50]
             set_i = old_sets[i]
             for j in cand_j_list:
                 score = _jaccard_similarity(set_i, new_sets[j])
@@ -166,57 +214,44 @@ def _content(old: Sequence[ExtractedPage], new: Sequence[ExtractedPage], thresho
     # NO POSITIONAL FALLBACK PAIRING (as required by Fix 1)
 
     # 3. Weighted Longest Increasing Subsequence (LIS) for Move Detection
-    # Matched pairs
-    matched_pairs = sorted(matched.items())  # sorted by old index i ascending
+    # Matched pairs sorted by old index i ascending
+    matched_pairs = sorted(matched.items())
     pair_scores: list[tuple[int, int, float]] = []
     for i, j in matched_pairs:
-        sim = _jaccard_similarity(old_sets[i], new_sets[j])
+        # Use the improved page_similarity that blends Jaccard + sequence order
+        sim = _page_similarity(old_sets[i], new_sets[j], old_words[i], new_words[j])
         w = sim ** 4
         pair_scores.append((i, j, w))
 
-    # To find LIS over new_j indices with tie-breaking toward diagonal
-    # O(E log E) Dynamic Programming / Fenwick Tree approach
-    # We want to find a subset of matched_pairs that keeps new_j strictly increasing
-    # while maximizing total weight w.
+    # O(E log E) Weighted LIS using Fenwick Tree with parent tracking
     n_pairs = len(pair_scores)
     dp = [0.0] * n_pairs
     parent = [-1] * n_pairs
 
     if n_pairs > 0:
         # Coordinate compression on new_j values
-        unique_j = sorted(list(set(j for _, j, _ in pair_scores)))
-        j_to_rank = {j: idx for idx, j in enumerate(unique_j)}
+        unique_j = sorted(set(j for _, j, _ in pair_scores))
+        j_to_rank = {j: r for r, j in enumerate(unique_j)}
+        num_ranks = len(unique_j)
 
-        # Fenwick Tree over ranks
-        # To handle tie-breaking toward diagonal (|i - j| smaller preferred),
-        # if weights are equal, we can add a small epsilon based on -abs(i - j).
-        bit = FenwickTree(len(unique_j))
+        # Fenwick Tree with (value, pair_index) tracking
+        bit = FenwickTree(num_ranks)
 
-        # We need DP array to reconstruct LIS
-        # To reconstruct parent chain using DP array:
         for idx in range(n_pairs):
             i, j, w = pair_scores[idx]
             rank = j_to_rank[j]
 
-            # Find max DP value for rank' < rank
-            best_prev_val = 0.0
-            best_prev_idx = -1
-            for prev_idx in range(idx):
-                pi, pj, pw = pair_scores[prev_idx]
-                if pj < j:
-                    if dp[prev_idx] > best_prev_val:
-                        best_prev_val = dp[prev_idx]
-                        best_prev_idx = prev_idx
-                    elif dp[prev_idx] == best_prev_val and best_prev_idx != -1:
-                        # Tie-break toward diagonal
-                        curr_diag = abs(i - j)
-                        prev_diag = abs(pi - pj)
-                        best_diag = abs(pair_scores[best_prev_idx][0] - pair_scores[best_prev_idx][1])
-                        if prev_diag < best_diag:
-                            best_prev_idx = prev_idx
+            # Query max DP for all ranks strictly less than current rank
+            if rank > 0:
+                best_prev_val, best_prev_idx = bit.query(rank - 1)
+            else:
+                best_prev_val, best_prev_idx = 0.0, -1
 
             dp[idx] = w + best_prev_val
             parent[idx] = best_prev_idx
+
+            # Update Fenwick tree at current rank with (dp[idx], idx)
+            bit.update(rank, dp[idx], idx)
 
     # Reconstruct LIS chain
     in_chain: set[int] = set()  # set of old_i that are in the LIS chain

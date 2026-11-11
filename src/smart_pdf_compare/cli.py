@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Sequence
 
 from .api import ComparisonOptions, compare_pdfs
-from .exceptions import PDFComparisonError, InvalidPDFError
+from .exceptions import InvalidPDFError, PDFComparisonError
 from .highlighting import highlight_differences
-from .visual import VisualComparisonOptions, compare_visual_pdfs, compare_visual_documents
+from .visual import VisualComparisonOptions, compare_visual_documents, compare_visual_pdfs
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,6 +39,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--visual-input", action="append", default=[], help="additional PDF to compare against the visual reference")
     parser.add_argument("--visual-reference", type=int, default=0, help="zero-based reference index for --visual-input sets")
     parser.add_argument("--overwrite", action="store_true", help="overwrite existing output files")
+    parser.add_argument("--ignore-header-footer-dates", action="store_true", help="ignore dates and times inside header and footer zones")
+    parser.add_argument("--ignore-header-footer-page-numbers", action="store_true", help="ignore page numbers inside header and footer zones")
+    parser.add_argument("--header-height", type=float, default=0.08, help="header zone height as fraction (<=1.0) or points (>1.0)")
+    parser.add_argument("--footer-height", type=float, default=0.08, help="footer zone height as fraction (<=1.0) or points (>1.0)")
+    parser.add_argument("--ignore-pattern", action="append", default=[], help="additional regex to ignore inside header/footer zones (repeatable)")
     return parser
 
 
@@ -76,7 +81,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                     item.is_identical for item in visual_result.comparisons
                 )
                 return 0 if identical else 1
-        options = ComparisonOptions(args.alignment, args.threshold, args.lookahead, args.max_differences)
+        options = ComparisonOptions(
+            alignment=args.alignment,
+            similarity_threshold=args.threshold,
+            lookahead=args.lookahead,
+            max_differences=args.max_differences,
+            ignore_header_footer_dates=args.ignore_header_footer_dates,
+            ignore_header_footer_page_numbers=args.ignore_header_footer_page_numbers,
+            header_height=args.header_height,
+            footer_height=args.footer_height,
+            ignore_patterns=tuple(args.ignore_pattern),
+        )
         result = compare_pdfs(args.original, args.revised, options=options)
 
         # JSON output to stdout ONLY if --json - is used

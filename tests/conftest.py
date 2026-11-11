@@ -1,4 +1,8 @@
+import sys
 from pathlib import Path
+
+# Ensure the workspace's src directory takes precedence over any installed copy
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import pymupdf
 import pytest

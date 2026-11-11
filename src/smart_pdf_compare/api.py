@@ -1,13 +1,14 @@
 """The small public comparison API."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from .alignment import AlignmentStrategy, align_pages
 from .diff import compare_words
-from .exceptions import ConfigurationError, MissingTextLayerError
+from .exceptions import ConfigurationError, InvalidOptionError, MissingTextLayerError
 from .extraction import ExtractedPage, extract_document, open_pdf
 from .normalization import NormalizationOptions
 from .results import ChangeType, ComparisonResult, ComparisonSummary, Difference, _PageMarkup
@@ -20,6 +21,9 @@ class ComparisonOptions:
     ``content`` alignment matches equivalent pages wherever they occur;
     ``sequential`` resynchronizes within ``lookahead`` pages; ``index`` pairs
     pages by position.  The default is a conservative content strategy.
+
+    header_height and footer_height define the header and footer zones as a
+    fraction of visible page height (<= 1.0) or in points (> 1.0).
     """
 
     alignment: AlignmentStrategy = "content"
@@ -28,6 +32,27 @@ class ComparisonOptions:
     max_differences: int | None = 1_000
     normalization: NormalizationOptions = NormalizationOptions()
     sort_words: bool = False  # False = native block/line order (preserves multi-column)
+    ignore_header_footer_dates: bool = False
+    ignore_header_footer_page_numbers: bool = False
+    header_height: float = 0.08
+    footer_height: float = 0.08
+    ignore_patterns: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.header_height < 0:
+            raise InvalidOptionError("header_height must be non-negative (>= 0)")
+        if self.footer_height < 0:
+            raise InvalidOptionError("footer_height must be non-negative (>= 0)")
+        if self.ignore_patterns:
+            if not isinstance(self.ignore_patterns, tuple):
+                object.__setattr__(self, "ignore_patterns", tuple(self.ignore_patterns))
+            for pattern in self.ignore_patterns:
+                try:
+                    re.compile(pattern)
+                except re.error as exc:
+                    raise InvalidOptionError(
+                        f"Invalid regular expression in ignore_patterns: {pattern!r}"
+                    ) from exc
 
 
 def compare_pdfs(
@@ -46,8 +71,20 @@ def compare_pdfs(
         raise ConfigurationError("max_differences must be non-negative or None")
 
     with open_pdf(old_pdf) as old_document, open_pdf(new_pdf) as new_document:
-        old_pages = extract_document(old_document, settings.normalization, sort_words=settings.sort_words)
-        new_pages = extract_document(new_document, settings.normalization, sort_words=settings.sort_words)
+        old_pages = extract_document(
+            old_document,
+            settings.normalization,
+            sort_words=settings.sort_words,
+            comparison_options=settings,
+        )
+        new_pages = extract_document(
+            new_document,
+            settings.normalization,
+            sort_words=settings.sort_words,
+            comparison_options=settings,
+        )
+
+    words_ignored = sum(page.words_ignored for page in old_pages) + sum(page.words_ignored for page in new_pages)
 
     old_has_text = any(page.words for page in old_pages)
     new_has_text = any(page.words for page in new_pages)
@@ -63,7 +100,7 @@ def compare_pdfs(
         warnings = [warning_msg]
         # Return a result with reliable=False instead of raising
         summary = ComparisonSummary(
-            len(old_pages), len(new_pages), 0, 0, 0, 0, 0, 0, 0
+            len(old_pages), len(new_pages), 0, 0, 0, 0, 0, 0, 0, words_ignored=words_ignored
         )
         return ComparisonResult(
             is_identical=False,
@@ -73,6 +110,7 @@ def compare_pdfs(
             warnings=warnings,
             truncated=False,
             _markup=[],
+            words_ignored=words_ignored,
         )
 
     pairs = align_pages(
@@ -161,6 +199,7 @@ def compare_pdfs(
         added_words,
         removed_words,
         total,
+        words_ignored=words_ignored,
     )
     warnings = []
     # reliable already checked; only blank pages warning remains
@@ -175,4 +214,5 @@ def compare_pdfs(
         truncated=truncated,
         _markup=markup,
         reliable=reliable,
+        words_ignored=words_ignored,
     )

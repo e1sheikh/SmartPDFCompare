@@ -39,6 +39,7 @@ class ComparisonSummary:
     added_words: int
     removed_words: int
     differences: int
+    words_ignored: int = 0
 
 
 @dataclass
@@ -63,6 +64,7 @@ class ComparisonResult:
     warnings: list[str] = field(default_factory=list)
     truncated: bool = False
     _markup: list[_PageMarkup] = field(default_factory=list, repr=False)
+    words_ignored: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         """Return JSON-compatible data without internal geometry."""
@@ -73,4 +75,5 @@ class ComparisonResult:
             "differences": [{**asdict(item), "change_type": item.change_type.value} for item in self.differences],
             "warnings": list(self.warnings),
             "truncated": self.truncated,
+            "words_ignored": self.words_ignored,
         }

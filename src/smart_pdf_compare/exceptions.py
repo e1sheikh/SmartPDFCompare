@@ -26,6 +26,10 @@ class ConfigurationError(PDFComparisonError):
     """An unsupported comparison or rendering option was requested."""
 
 
+class InvalidOptionError(ConfigurationError):
+    """An invalid comparison or processing option was requested."""
+
+
 class OutputExistsError(FileExistsError, PDFComparisonError):
     """Output file already exists and overwrite is not enabled."""
 

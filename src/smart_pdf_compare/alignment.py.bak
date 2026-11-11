@@ -1,0 +1,271 @@
+"""Page correspondence strategies."""
+from __future__ import annotations
+
+from collections import defaultdict, deque
+from dataclasses import dataclass
+from typing import Literal, Optional, Sequence
+
+from .exceptions import ConfigurationError
+from .normalization import NormalizationOptions, normalize_token
+from .extraction import ExtractedPage
+
+AlignmentStrategy = Literal["content", "index", "sequential"]
+
+
+@dataclass(frozen=True)
+class PagePair:
+    old: Optional[int]
+    new: Optional[int]
+    moved: bool = False
+
+
+class FenwickTree:
+    """Max Fenwick tree for Weighted LIS."""
+    def __init__(self, size: int):
+        self.size = size
+        self.tree = [0.0] * (size + 1)
+
+    def update(self, idx: int, val: float) -> None:
+        # 1-based index
+        i = idx + 1
+        while i <= self.size:
+            if val > self.tree[i]:
+                self.tree[i] = val
+            i += i & (-i)
+
+    def query(self, idx: int) -> float:
+        # max in [0..idx]
+        i = idx + 1
+        res = 0.0
+        while i > 0:
+            if self.tree[i] > res:
+                res = self.tree[i]
+            i -= i & (-i)
+        return res
+
+
+def _jaccard_similarity(set_a: set[str], set_b: set[str]) -> float:
+    if not set_a and not set_b:
+        return 1.0
+    if not set_a or not set_b:
+        return 0.0
+    intersection = set_a & set_b
+    union = set_a | set_b
+    return len(intersection) / len(union) if union else 0.0
+
+
+def _page_word_set(page: ExtractedPage) -> set[str]:
+    # Return set of normalized words for page
+    return {w.normalized for w in page.words if w.normalized}
+
+
+def align_pages(
+    old: Sequence[ExtractedPage],
+    new: Sequence[ExtractedPage],
+    strategy: AlignmentStrategy,
+    threshold: float,
+    lookahead: int,
+) -> list[PagePair]:
+    """Return one-to-one page correspondence, including unpaired pages."""
+    if strategy not in ("content", "index", "sequential"):
+        raise ConfigurationError("alignment must be 'content', 'index', or 'sequential'")
+    if not 0.0 <= threshold <= 1.0:
+        raise ConfigurationError("similarity_threshold must be between 0 and 1")
+    if lookahead < 1:
+        raise ConfigurationError("lookahead must be at least 1")
+    if strategy == "index":
+        pairs = [PagePair(i, i) for i in range(min(len(old), len(new)))]
+        pairs.extend(PagePair(i, None) for i in range(len(new), len(old)))
+        pairs.extend(PagePair(None, j) for j in range(len(old), len(new)))
+        return pairs
+    if strategy == "sequential":
+        return _sequential(old, new, threshold, lookahead)
+    return _content(old, new, threshold)
+
+
+def _content(old: Sequence[ExtractedPage], new: Sequence[ExtractedPage], threshold: float) -> list[PagePair]:
+    n, m = len(old), len(new)
+
+    # 1. Exact fingerprints are paired first (greedy left-to-right)
+    by_signature: dict[str, deque[int]] = defaultdict(deque)
+    for j, page in enumerate(new):
+        by_signature[page.signature].append(j)
+
+    matched: dict[int, int] = {}
+    used: set[int] = set()
+
+    for i, page in enumerate(old):
+        candidates = by_signature[page.signature]
+        if candidates:
+            j = candidates.popleft()
+            matched[i] = j
+            used.add(j)
+
+    # Pre-compute word sets for Jaccard
+    old_sets = [_page_word_set(p) for p in old]
+    new_sets = [_page_word_set(p) for p in new]
+
+    # 2. Candidate generation for unmatched pages
+    unmatched_old = [i for i in range(n) if i not in matched]
+    unmatched_new = [j for j in range(m) if j not in used]
+
+    candidates_list: list[tuple[float, int, int]] = []
+
+    if n * m <= 100_000:
+        # Small doc: Exhaustive pairwise Jaccard
+        for i in unmatched_old:
+            set_i = old_sets[i]
+            for j in unmatched_new:
+                score = _jaccard_similarity(set_i, new_sets[j])
+                if score >= threshold:
+                    candidates_list.append((score, i, j))
+    else:
+        # Large doc: Inverted index candidate generation
+        # Document frequency over new pages
+        df: dict[str, int] = defaultdict(int)
+        for j in range(m):
+            for w in new_sets[j]:
+                df[w] += 1
+
+        max_df = max(10, m // 20)
+        rare_words_index: dict[str, list[int]] = defaultdict(list)
+        for j in range(m):
+            for w in new_sets[j]:
+                if df[w] <= max_df:
+                    rare_words_index[w].append(j)
+
+        for i in unmatched_old:
+            cand_j: set[int] = set()
+            # Inverted index search
+            for w in old_sets[i]:
+                if df[w] <= max_df:
+                    for j in rare_words_index[w]:
+                        if j not in used:
+                            cand_j.add(j)
+
+            # Small index window (e.g. +/- 10 around i)
+            window_start = max(0, i - 10)
+            window_end = min(m, i + 10)
+            for j in range(window_start, window_end):
+                if j not in used:
+                    cand_j.add(j)
+
+            # Sort candidates deterministically, prioritize closeness
+            cand_j_list = sorted(cand_j, key=lambda j: (abs(i - j), j))[:50]
+            set_i = old_sets[i]
+            for j in cand_j_list:
+                score = _jaccard_similarity(set_i, new_sets[j])
+                if score >= threshold:
+                    candidates_list.append((score, i, j))
+
+    # Pair candidates greedily by score desc, distance asc, old_i asc, new_j asc
+    candidates_list.sort(key=lambda item: (-item[0], abs(item[1] - item[2]), item[1], item[2]))
+    for score, i, j in candidates_list:
+        if i not in matched and j not in used:
+            matched[i] = j
+            used.add(j)
+
+    # NO POSITIONAL FALLBACK PAIRING (as required by Fix 1)
+
+    # 3. Weighted Longest Increasing Subsequence (LIS) for Move Detection
+    # Matched pairs
+    matched_pairs = sorted(matched.items())  # sorted by old index i ascending
+    pair_scores: list[tuple[int, int, float]] = []
+    for i, j in matched_pairs:
+        sim = _jaccard_similarity(old_sets[i], new_sets[j])
+        w = sim ** 4
+        pair_scores.append((i, j, w))
+
+    # To find LIS over new_j indices with tie-breaking toward diagonal
+    # O(E log E) Dynamic Programming / Fenwick Tree approach
+    # We want to find a subset of matched_pairs that keeps new_j strictly increasing
+    # while maximizing total weight w.
+    n_pairs = len(pair_scores)
+    dp = [0.0] * n_pairs
+    parent = [-1] * n_pairs
+
+    if n_pairs > 0:
+        # Coordinate compression on new_j values
+        unique_j = sorted(list(set(j for _, j, _ in pair_scores)))
+        j_to_rank = {j: idx for idx, j in enumerate(unique_j)}
+
+        # Fenwick Tree over ranks
+        # To handle tie-breaking toward diagonal (|i - j| smaller preferred),
+        # if weights are equal, we can add a small epsilon based on -abs(i - j).
+        bit = FenwickTree(len(unique_j))
+
+        # We need DP array to reconstruct LIS
+        # To reconstruct parent chain using DP array:
+        for idx in range(n_pairs):
+            i, j, w = pair_scores[idx]
+            rank = j_to_rank[j]
+
+            # Find max DP value for rank' < rank
+            best_prev_val = 0.0
+            best_prev_idx = -1
+            for prev_idx in range(idx):
+                pi, pj, pw = pair_scores[prev_idx]
+                if pj < j:
+                    if dp[prev_idx] > best_prev_val:
+                        best_prev_val = dp[prev_idx]
+                        best_prev_idx = prev_idx
+                    elif dp[prev_idx] == best_prev_val and best_prev_idx != -1:
+                        # Tie-break toward diagonal
+                        curr_diag = abs(i - j)
+                        prev_diag = abs(pi - pj)
+                        best_diag = abs(pair_scores[best_prev_idx][0] - pair_scores[best_prev_idx][1])
+                        if prev_diag < best_diag:
+                            best_prev_idx = prev_idx
+
+            dp[idx] = w + best_prev_val
+            parent[idx] = best_prev_idx
+
+    # Reconstruct LIS chain
+    in_chain: set[int] = set()  # set of old_i that are in the LIS chain
+    if n_pairs > 0:
+        best_end = max(range(n_pairs), key=lambda x: dp[x])
+        curr = best_end
+        while curr != -1:
+            in_chain.add(pair_scores[curr][0])
+            curr = parent[curr]
+
+    # Matched pairs NOT in the LIS chain are flagged as moved!
+    keyed: list[tuple[float, PagePair]] = []
+    reverse_matched = {j: i for i, j in matched.items()}
+
+    for i in range(n):
+        if i in matched:
+            j = matched[i]
+            is_moved = (i not in in_chain)
+            keyed.append((float(i), PagePair(i, j, moved=is_moved)))
+        else:
+            keyed.append((float(i), PagePair(i, None)))
+
+    for j in range(m):
+        if j not in used:
+            before = [reverse_matched[k] for k in range(j - 1, -1, -1) if k in reverse_matched]
+            keyed.append(((before[0] + 0.5) if before else -0.5, PagePair(None, j)))
+
+    return [pair for _, pair in sorted(keyed, key=lambda item: item[0])]
+
+
+def _sequential(old: Sequence[ExtractedPage], new: Sequence[ExtractedPage], threshold: float, lookahead: int) -> list[PagePair]:
+    pairs: list[PagePair] = []
+    i = j = 0
+    old_sets = [_page_word_set(p) for p in old]
+    new_sets = [_page_word_set(p) for p in new]
+
+    while i < len(old) and j < len(new):
+        if _jaccard_similarity(old_sets[i], new_sets[j]) >= threshold:
+            pairs.append(PagePair(i, j)); i += 1; j += 1; continue
+        new_anchor = next((k for k in range(j + 1, min(len(new), j + lookahead + 1)) if _jaccard_similarity(old_sets[i], new_sets[k]) >= threshold), None)
+        old_anchor = next((k for k in range(i + 1, min(len(old), i + lookahead + 1)) if _jaccard_similarity(old_sets[k], new_sets[j]) >= threshold), None)
+        if new_anchor is not None and (old_anchor is None or new_anchor - j <= old_anchor - i):
+            pairs.extend(PagePair(None, k) for k in range(j, new_anchor)); j = new_anchor
+        elif old_anchor is not None:
+            pairs.extend(PagePair(k, None) for k in range(i, old_anchor)); i = old_anchor
+        else:
+            pairs.append(PagePair(i, j)); i += 1; j += 1
+    pairs.extend(PagePair(k, None) for k in range(i, len(old)))
+    pairs.extend(PagePair(None, k) for k in range(j, len(new)))
+    return pairs

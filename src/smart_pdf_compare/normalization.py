@@ -11,7 +11,7 @@ class NormalizationOptions:
     """Policy for comparison tokens.
 
     Punctuation is retained by default: removing it can hide meaningful values
-    such as ``1.2`` versus ``12``.  Original PDF text is never altered.
+    such as `1.2` versus `12`.  Original PDF text is never altered.
     """
 
     ignore_case: bool = True
@@ -45,6 +45,16 @@ _QUOTES = str.maketrans({
     "‟": '"',  # double high-reversed-9 quotation mark
 })
 
+# Technical symbols commonly found in datasheets
+_SYMBOLS = str.maketrans({
+    "º": "°",   # masculine ordinal -> degree
+    "˚": "°",   # ring above -> degree
+    "℃": "°C",  # degree Celsius -> degree + C
+    "◦": "°",   # white bullet -> degree
+    "ϑ": "θ",   # theta variant -> theta
+    "ϴ": "θ",   # capital theta variant -> theta
+})
+
 # Zero-width and soft hyphen characters to remove
 _ZERO_WIDTH_CHARS = {
     "­",   # soft hyphen
@@ -66,8 +76,11 @@ _PUNCTUATION_EDGE = re.compile(r"^[^\w\s'-]+|[^\w\s'-]+$", re.UNICODE)
 
 def normalize_token(text: str, options: NormalizationOptions = NormalizationOptions()) -> str:
     """Return a comparison key while preserving numeric signs and contractions."""
+    # Map technical symbols to canonical forms BEFORE NFKC
+    value = text.translate(_SYMBOLS)
+
     # NFKC normalization, then handle special characters
-    value = unicodedata.normalize("NFKC", text)
+    value = unicodedata.normalize("NFKC", value)
 
     # Remove zero-width and soft hyphen characters
     if _ZERO_WIDTH_CHARS:
