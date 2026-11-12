@@ -12,6 +12,12 @@ from .extraction import open_pdf
 
 VisualOutputMode = Literal["none", "side_by_side", "diff_image"]
 
+# Maximum pixel dimension difference (per axis) considered an insignificant
+# rendering variation rather than a genuine page-size change.  Two pixels
+# accommodates rounding differences across PDF renderers and DPI settings
+# without masking intentional layout changes.
+_DIMENSION_TOLERANCE = 2
+
 
 @dataclass(frozen=True)
 class VisualComparisonOptions:
@@ -147,14 +153,56 @@ def _blank(width: int, height: int, background: tuple[int, int, int]) -> _Raster
     return _Raster(width, height, bytes(background) * (width * height))
 
 
-def _difference_image(left: bytes, right: bytes, width: int, height: int, threshold: int) -> tuple[int, bytes]:
-    # FIX 8: Fast path if identical
+def _grayscale_row(row_bytes: bytes) -> bytearray:
+    """Convert an RGB row to a washed-out grayscale representation."""
+    n = len(row_bytes)
+    out = bytearray(n)
+    for i in range(0, n, 3):
+        # Average of RGB channels, washed out (50% toward white)
+        shade = (row_bytes[i] + row_bytes[i + 1] + row_bytes[i + 2]) // 6 + 128
+        if shade > 240:
+            shade = 240
+        out[i] = out[i + 1] = out[i + 2] = shade
+    return out
+
+
+def _count_changed_pixels(left: bytes, right: bytes, width: int, height: int, threshold: int) -> int:
+    """Count pixels that differ by more than *threshold* (fast path: no output image)."""
     if left == right:
-        # Generate grayscale diff representation for identical rasters
+        return 0
+    changed = 0
+    row_bytes = width * 3
+    for row in range(height):
+        row_start = row * row_bytes
+        row_end = row_start + row_bytes
+        if left[row_start:row_end] == right[row_start:row_end]:
+            continue
+        for idx in range(row_start, row_end, 3):
+            delta = max(
+                abs(left[idx] - right[idx]),
+                abs(left[idx + 1] - right[idx + 1]),
+                abs(left[idx + 2] - right[idx + 2]),
+            )
+            if delta > threshold:
+                changed += 1
+    return changed
+
+
+def _difference_image(left: bytes, right: bytes, width: int, height: int, threshold: int) -> tuple[int, bytes]:
+    """Produce a diff image highlighting changed pixels and return (count, image_bytes).
+
+    Unchanged regions are rendered as washed-out grayscale; changed pixels are
+    highlighted in red (#FF333C).  Row-level fast-path skips identical rows
+    entirely.
+    """
+    # Fast path: identical rasters
+    if left == right:
         output = bytearray(len(left))
         for index in range(0, len(left), 3):
-            shade = (left[index] + left[index + 1] + left[index + 2]) // 9 + 170
-            output[index:index + 3] = bytes((shade, shade, shade))
+            shade = (left[index] + left[index + 1] + left[index + 2]) // 6 + 128
+            if shade > 240:
+                shade = 240
+            output[index] = output[index + 1] = output[index + 2] = shade
         return 0, bytes(output)
 
     changed = 0
@@ -169,12 +217,11 @@ def _difference_image(left: bytes, right: bytes, width: int, height: int, thresh
         right_row = right[row_start:row_end]
 
         if left_row == right_row:
-            # Row is identical, copy grayscale background representation
-            for index in range(row_start, row_end, 3):
-                shade = (left[index] + left[index + 1] + left[index + 2]) // 9 + 170
-                output[index:index + 3] = bytes((shade, shade, shade))
+            # Row is identical – write grayscale background
+            gray = _grayscale_row(left_row)
+            output[row_start:row_end] = gray
         else:
-            # Row differs, process per-pixel logic for this row
+            # Row differs – process per-pixel
             for index in range(row_start, row_end, 3):
                 delta = max(
                     abs(left[index] - right[index]),
@@ -185,10 +232,26 @@ def _difference_image(left: bytes, right: bytes, width: int, height: int, thresh
                     output[index:index + 3] = b"\xff3<"
                     changed += 1
                 else:
-                    shade = (left[index] + left[index + 1] + left[index + 2]) // 9 + 170
-                    output[index:index + 3] = bytes((shade, shade, shade))
+                    shade = (left[index] + left[index + 1] + left[index + 2]) // 6 + 128
+                    if shade > 240:
+                        shade = 240
+                    output[index] = output[index + 1] = output[index + 2] = shade
 
     return changed, bytes(output)
+
+
+def _is_significant_dimension_mismatch(
+    old_dims: tuple[int, int],
+    new_dims: tuple[int, int],
+) -> bool:
+    """Return True if the dimension difference exceeds rendering tolerance.
+
+    Small differences (≤ ``_DIMENSION_TOLERANCE`` px per axis) are treated as
+    insignificant rendering variations rather than genuine layout changes.
+    """
+    dw = abs(old_dims[0] - new_dims[0])
+    dh = abs(old_dims[1] - new_dims[1])
+    return dw > _DIMENSION_TOLERANCE or dh > _DIMENSION_TOLERANCE
 
 
 def _compare_pair(
@@ -208,9 +271,17 @@ def _compare_pair(
                 image = _render(old_page or new_page, options.dpi)
                 blank = _blank(image.width, image.height, options.background)
                 old_image, new_image = (image, blank) if old_page else (blank, image)
-                changed, diff_samples = _difference_image(
-                    old_image.samples, new_image.samples, image.width, image.height, options.pixel_threshold
-                )
+                # When one side is missing the page is always different, but we
+                # still need the pixel count for diff_image output.
+                if output_dir and options.output_mode in ("side_by_side", "diff_image"):
+                    changed, diff_samples = _difference_image(
+                        old_image.samples, new_image.samples, image.width, image.height, options.pixel_threshold
+                    )
+                else:
+                    changed = _count_changed_pixels(
+                        old_image.samples, new_image.samples, image.width, image.height, options.pixel_threshold
+                    )
+                    diff_samples = bytes(0)
                 side_path = diff_path = None
                 if output_dir and options.output_mode == "side_by_side":
                     side = output_dir / f"{prefix}-page-{index + 1:04d}-side-by-side.png"
@@ -254,11 +325,35 @@ def _compare_pair(
                 width, height = max(old_image.width, new_image.width), max(old_image.height, new_image.height)
                 old_canvas = _canvas(old_image, width, height, options.background)
                 new_canvas = _canvas(new_image, width, height, options.background)
-                changed, diff_samples = _difference_image(old_canvas, new_canvas, width, height, options.pixel_threshold)
+
+                # Determine dimension mismatch significance
+                old_dims = (old_image.width, old_image.height)
+                new_dims = (new_image.width, new_image.height)
+                raw_dim_mismatch = old_dims != new_dims
+                significant_dim_mismatch = raw_dim_mismatch and _is_significant_dimension_mismatch(old_dims, new_dims)
+
+                # When we only need the pixel count (no output image), skip
+                # building the full diff image for a meaningful speedup.
+                need_diff_image = output_dir and options.output_mode == "diff_image"
+                if need_diff_image or options.output_mode == "side_by_side":
+                    changed, diff_samples = _difference_image(old_canvas, new_canvas, width, height, options.pixel_threshold)
+                else:
+                    changed = _count_changed_pixels(old_canvas, new_canvas, width, height, options.pixel_threshold)
+                    diff_samples = bytes(0)
+
                 total = width * height
-                ratio = changed / total
-                dimension_mismatch = (old_image.width, old_image.height) != (new_image.width, new_image.height)
-                different = dimension_mismatch or (changed >= options.min_changed_pixels and ratio >= options.min_difference_ratio)
+                ratio = changed / total if total else 0.0
+                dimension_mismatch = raw_dim_mismatch
+
+                # A page is visually different only when:
+                # (a) the dimension difference is significant (exceeds tolerance), OR
+                # (b) enough pixels actually changed content-wise.
+                # Previously, ANY dimension mismatch (even 1px) unconditionally
+                # triggered visually_different=True, causing false positives for
+                # minor rendering variations.
+                different = significant_dim_mismatch or (
+                    changed >= options.min_changed_pixels and ratio >= options.min_difference_ratio
+                )
 
             side_path = diff_path = None
             if output_dir and options.output_mode == "side_by_side":

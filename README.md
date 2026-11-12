@@ -17,6 +17,7 @@
 <p align="center">
   <a href="#quick-start"><strong>Quick start</strong></a> ·
   <a href="#features"><strong>Features</strong></a> ·
+  <a href="#ignoring-header--footer-dates-and-page-numbers"><strong>Header/Footer Ignore</strong></a> ·
   <a href="#command-line"><strong>CLI</strong></a> ·
   <a href="docs/api.md"><strong>API</strong></a> ·
   <a href="docs/architecture.md"><strong>Architecture</strong></a> ·
@@ -31,6 +32,7 @@
 ## Features
 
 - **[Structured comparison](docs/api.md)** — added, removed, replaced, added-page, removed-page, and moved-page records with JSON serialization.
+- **[Header and footer filtering](#ignoring-header--footer-dates-and-page-numbers)** — opt-in filtering of print timestamps, generation dates, and page numbers inside page margin zones.
 - **[Unicode-aware text extraction](https://pymupdf.readthedocs.io/en/latest/textpage.html)** — PyMuPDF word coordinates, NFKC normalization, case folding, ligatures, NBSPs, and dash/minus variants.
 - **[Practical page alignment](docs/architecture.md)** — content matching for inserted/moved pages, bounded sequential look-ahead, and index-by-index comparison.
 - **[Visual review](#highlighted-output)** — native PDF highlights or boxes in safe output copies; optional side-by-side report pages.
@@ -124,6 +126,7 @@ result = compare_pdfs(
         lookahead=5,
         max_differences=1_000,
     ),
+)
 ```
 
 | Strategy | Best for | Trade-off |
@@ -134,11 +137,58 @@ result = compare_pdfs(
 
 Normalization is deliberately conservative: it uses NFKC, case folding, ligature compatibility, non-breaking-space cleanup, and dash/minus unification. Punctuation remains significant by default, so decimal values, negative numbers, negation, and contractions do not silently disappear.
 
+## Ignoring Header & Footer Dates and Page Numbers
+
+Many documents regenerate timestamps, print dates, or page numbers in their headers or footers on every export, producing false differences between revisions whose actual content has not changed.
+
+For example, comparing footers like:
+- Original: `06/27/2025 06:08PM | Page 2`
+- Revised: `10/15/2025 06:22PM | Page 2`
+
+Without filtering, `06/27/2025` vs `10/15/2025` and `06:08PM` vs `06:22PM` are reported as text differences. With `ignore_header_footer_dates=True`, these timestamps are ignored, leaving only `| Page 2`. If the rest of the page is equal, the documents compare as identical.
+
+```python
+from smart_pdf_compare import ComparisonOptions, compare_pdfs
+
+options = ComparisonOptions(
+    ignore_header_footer_dates=True,          # Ignore dates & times in header/footer zones
+    ignore_header_footer_page_numbers=True,    # Ignore "Page 2", "2 of 10", "- 2 -"
+    header_height=0.08,                        # Top 8% of page (or points if > 1.0)
+    footer_height=0.08,                        # Bottom 8% of page (or points if > 1.0)
+    ignore_patterns=(r"CONFIDENTIAL",),        # Extra regex patterns applied inside zones
+)
+
+result = compare_pdfs("original.pdf", "revised.pdf", options=options)
+print(result.is_identical)
+print(f"Ignored words: {result.words_ignored}")
+```
+
+### Key properties
+
+- **Zone-restricted**: Only words located within the top `header_height` or bottom `footer_height` of the visible page (respecting page rotation) are eligible for filtering. Dates and numbers in the **body text are never ignored**.
+- **Transparent**: The number of ignored tokens is tracked in `result.words_ignored` (and `result.summary.words_ignored`), ensuring ignoring is never silent.
+- **Consistent downstream**: Ignored words behave like empty tokens: excluded from word diffs, diff counts, page alignment similarity sets, and highlight annotations.
+- **Rotation-aware**: Works on rotated pages (90°, 180°, 270°) by evaluating word positions in viewer coordinates via `page.rotation_matrix`.
+
+### Limits & Scope
+
+1. **Zone height heuristic**: Defaults to `0.08` (8% of visible page height). Values `> 1.0` are treated as absolute points (e.g. `header_height=54.0`). If a header or footer extends deeper than the zone limit, adjust `header_height` or `footer_height`.
+2. **Date & time formats covered**:
+   - Numeric dates: `MM/DD/YYYY`, `M-D-YY`, `DD.MM.YYYY`, `YYYY-MM-DD` (e.g. `06/27/2025`, `6-27-25`, `27.06.2025`, `2025-06-27`).
+   - Times: 12-hour or 24-hour formats (e.g. `06:08PM`, `06:08 PM`, `18:08:30`, `6:08 a.m.`).
+   - Month-name dates: English month names only, full or abbreviated (e.g. `Jun 27, 2025`, `27 June 2025`, `June 27, 2025`, `June 2025`). Other languages can be matched via `ignore_patterns`.
+3. **Page numbers covered**: Forms matching `"Page X"`, `"Page X of Y"`, `"X of Y"`, `"X / Y"`, and hyphenated forms like `"- X -"` or `"– X –"`.
+
 ## Command line
 
 ```bash
 smart-pdf-compare original.pdf revised.pdf \
   --alignment content \
+  --ignore-header-footer-dates \
+  --ignore-header-footer-page-numbers \
+  --header-height 0.08 \
+  --footer-height 0.08 \
+  --ignore-pattern "DRAFT" \
   --output-dir diff-output \
   --style highlight \
   --report \

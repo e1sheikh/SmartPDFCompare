@@ -1,8 +1,15 @@
 # Changelog
 
-## 0.2.0 - 2026-10-28
+## 0.2.3 - 2026-11-11
 
-Add rendered-page visual comparison with PNG artifact generation, reference-based multi-PDF comparison, visual CLI controls, adjacent-word annotation grouping, typographic-quote normalization, and an optional lazy-Tk desktop viewer entry point.
+### Added
+
+- Opt-in filtering of dates, times, and page numbers inside page header and footer zones (`ignore_header_footer_dates`, `ignore_header_footer_page_numbers`, `header_height`, `footer_height`, `ignore_patterns` in `ComparisonOptions`).
+- Zone detection respecting page rotation (0°, 90°, 180°, 270°) using PyMuPDF `page.rotation_matrix`.
+- Multi-word matching on visual lines within zones for split times (e.g. `06:08 PM`), month-name dates (`Jun 27, 2025`, `27 June 2025`), and page numbers (`Page 2`, `2 of 10`, `- 2 -`).
+- `words_ignored` count in `ComparisonResult`, `ComparisonSummary`, and JSON output.
+- `InvalidOptionError` exception for invalid option values (e.g. negative zone heights or invalid regex patterns).
+- CLI flags: `--ignore-header-footer-dates`, `--ignore-header-footer-page-numbers`, `--header-height`, `--footer-height`, and repeatable `--ignore-pattern`.
 
 ## 0.2.1 - 2026-11-04
 
@@ -49,6 +56,10 @@ Add rendered-page visual comparison with PNG artifact generation, reference-base
 - Fixed zero-width and soft hyphen removal in token normalization
 - Fixed curly quote/apostrophe mapping to ASCII
 - Fixed dash/minus variant mapping (U+2010-U+2015, U+2212, U+FE58, U+FE63, U+FF0D)
+
+## 0.2.0 - 2026-10-28
+
+Add rendered-page visual comparison with PNG artifact generation, reference-based multi-PDF comparison, visual CLI controls, adjacent-word annotation grouping, typographic-quote normalization, and an optional lazy-Tk desktop viewer entry point.
 
 ## 0.1.1 - 2026-10-28
 
