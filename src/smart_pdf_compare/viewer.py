@@ -173,11 +173,14 @@ def launch_viewer(old_pdf: str | Path | None = None, new_pdf: str | Path | None 
             if not directory:
                 return
             try:
-                outputs = highlight_differences(self.old_pdf, self.new_pdf, directory, result=self.result, style=self.style.get())
+                outputs = highlight_differences(self.old_pdf, self.new_pdf, directory, result=self.result, style=self.style.get(), include_report=True)
             except (OSError, PDFComparisonError) as exc:
                 messagebox.showerror("Save failed", str(exc))
                 return
-            messagebox.showinfo("Saved", f"Saved:\n{outputs.original}\n{outputs.revised}")
+            if outputs.report:
+                messagebox.showinfo("Saved", f"Saved report:\n{outputs.report}")
+            else:
+                messagebox.showinfo("Saved", f"Saved to directory:\n{directory}")
 
     _Viewer()
     root.mainloop()

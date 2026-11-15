@@ -58,7 +58,10 @@ python -m pip install --upgrade smart-pdf-compare
 ```python
 from smart_pdf_compare import compare_pdfs, highlight_differences
 
-result = compare_pdfs("original.pdf", "revised.pdf")
+original = r"original.pdf"
+revised = r"revised.pdf"
+
+result = compare_pdfs(original, revised)
 
 print(result.is_identical)
 print(result.summary)
@@ -66,8 +69,8 @@ for change in result.differences:
     print(f"{change.change_type}: {change.old_text!r} -> {change.new_text!r}")
 
 outputs = highlight_differences(
-    "original.pdf",
-    "revised.pdf",
+    original,
+    revised,
     output_dir="diff-output",
     result=result,
     include_report=True,

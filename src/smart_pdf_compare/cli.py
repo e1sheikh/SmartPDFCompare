@@ -150,9 +150,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.original, args.revised, args.output_dir, result=result, style=args.style,
                 include_report=args.report, overwrite=args.overwrite
             )
-            print(f"Highlighted PDFs: {outputs.original}, {outputs.revised}")
             if outputs.report:
                 print(f"Difference report: {outputs.report}")
+            else:
+                print(f"Report saved to: {args.output_dir}/difference_report.pdf")
 
         visual_identical = True if visual_result is None else (
             visual_result.is_identical if hasattr(visual_result, "is_identical") else all(
