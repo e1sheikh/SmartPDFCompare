@@ -107,7 +107,17 @@ def dump_diffs(result: Any, old_pages: List[ExtractedPage], new_pages: List[Extr
                 old_page = old_pages[diff.old_page - 1]
                 new_page = new_pages[diff.new_page - 1]
                 explanation = explain_difference(diff, old_page, new_page)
-                all_explanations.append(explanation)
+                # Convert DebugInfo to dict recursively
+                def serialize(obj):
+                    if hasattr(obj, '__dataclass_fields__'):
+                        return {k: serialize(v) for k, v in obj.__dict__.items()}
+                    elif isinstance(obj, (list, tuple)):
+                        return [serialize(item) for item in obj]
+                    elif isinstance(obj, dict):
+                        return {k: serialize(v) for k, v in obj.items()}
+                    else:
+                        return obj
+                all_explanations.append(serialize(explanation))
             except IndexError:
                 continue
 

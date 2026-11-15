@@ -44,6 +44,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--header-height", type=float, default=0.08, help="header zone height as fraction (<=1.0) or points (>1.0)")
     parser.add_argument("--footer-height", type=float, default=0.08, help="footer zone height as fraction (<=1.0) or points (>1.0)")
     parser.add_argument("--ignore-pattern", action="append", default=[], help="additional regex to ignore inside header/footer zones (repeatable)")
+    parser.add_argument("--explain", action="store_true", help="explain differences with detailed diagnostics")
+    parser.add_argument("--dump-diffs", type=Path, help="dump detailed diff diagnostics to JSON file")
     return parser
 
 
@@ -93,6 +95,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             ignore_patterns=tuple(args.ignore_pattern),
         )
         result = compare_pdfs(args.original, args.revised, options=options)
+
+        # Handle diagnostic output
+        if args.explain or args.dump_diffs:
+            from .debug import dump_diffs
+            from .extraction import extract_document, open_pdf
+            from .normalization import NormalizationOptions
+
+            with open_pdf(args.original) as old_doc, open_pdf(args.revised) as new_doc:
+                old_pages = extract_document(old_doc, NormalizationOptions(), sort_words=args.sort_words if hasattr(args, 'sort_words') else False, comparison_options=options)
+                new_pages = extract_document(new_doc, NormalizationOptions(), sort_words=args.sort_words if hasattr(args, 'sort_words') else False, comparison_options=options)
+
+            if args.dump_diffs:
+                dump_diffs(result, old_pages, new_pages, str(args.dump_diffs))
+                print(f"Detailed diffs written to {args.dump_diffs}", file=sys.stderr)
+
+            if args.explain:
+                from .debug import explain_difference
+                print("\n=== DIFF EXPLANATIONS ===\n", file=sys.stderr)
+                for diff in result.differences[:10]:  # Limit to first 10
+                    if diff.old_page and diff.new_page:
+                        try:
+                            old_page = old_pages[diff.old_page - 1]
+                            new_page = new_pages[diff.new_page - 1]
+                            explanation = explain_difference(diff, old_page, new_page)
+                            print(f"Change type: {explanation['change_type']}", file=sys.stderr)
+                            print(f"Old text: {explanation['old_text'][:100]}", file=sys.stderr)
+                            print(f"New text: {explanation['new_text'][:100]}", file=sys.stderr)
+                            print("-" * 80, file=sys.stderr)
+                        except IndexError:
+                            continue
 
         # JSON output to stdout ONLY if --json - is used
         json_output_to_stdout = args.json_path == Path("-")
