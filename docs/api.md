@@ -1,127 +1,62 @@
-# API reference
+# API Documentation
 
-```python
-from smart_pdf_compare import compare_pdfs, highlight_differences
-```
+## ComparisonOptions
 
-## `compare_pdfs(old_pdf, new_pdf, options=None)` → `ComparisonResult`
+### Header/Footer Ignoring
 
-Configure with `ComparisonOptions(...)`.
+Smart-PDF-Compare can optionally ignore dates, times, and page numbers that appear in page header and footer zones.
 
-### `ComparisonOptions` dataclass
+#### Options
 
-| Field | Default | Description |
-| --- | --- | --- |
-| `alignment` | `"content"` | `"content"`, `"index"`, or `"sequential"` |
-| `similarity_threshold` | `0.60` | Float in [0, 1] for page pairing |
-| `lookahead` | `5` | Window for sequential resynchronization |
-| `max_differences` | `1_000` | Cap on returned difference entries |
-| `normalization` | `NormalizationOptions()` | Policy for token normalization |
-| `sort_words` | `False` | If `True`, words are sorted by (y, x) within each page (PyMuPDF `sort=True`). If `False`, words are in native block/line order (preserves multi-column reading order). |
-| `ignore_header_footer_dates` | `False` | When `True`, dates and times in page header and footer zones are ignored. |
-| `ignore_header_footer_page_numbers` | `False` | When `True`, page numbers (`Page 2`, `2 of 10`, `- 2 -`) in header and footer zones are ignored. |
-| `header_height` | `0.08` | Height of the top header zone. Values `<= 1.0` are fractions of visible page height (e.g. `0.08` = 8%); values `> 1.0` represent points (e.g. `54.0`). Must be non-negative (`>= 0`). |
-| `footer_height` | `0.08` | Height of the bottom footer zone. Values `<= 1.0` are fractions of visible page height (e.g. `0.08` = 8%); values `> 1.0` represent points (e.g. `54.0`). Must be non-negative (`>= 0`). |
-| `ignore_patterns` | `()` | Tuple of extra regular expressions applied *only* inside header and footer zones. Validated and compiled at option construction; invalid regex raises `InvalidOptionError`. |
+- `ignore_header_footer_dates` (bool, default False): Ignore dates and times in header/footer zones
+- `ignore_header_footer_page_numbers` (bool, default False): Ignore page numbers in header/footer zones
+- `header_height` (float, default 0.08): Header zone height as fraction (<= 1.0) or points (> 1.0)
+- `footer_height` (float, default 0.08): Footer zone height as fraction (<= 1.0) or points (> 1.0)
+- `ignore_patterns` (tuple[str, ...], default ()): Extra regex patterns to ignore in header/footer zones
 
-### `ComparisonResult` attributes
+#### Zone Detection
 
-| Attribute | Type | Description |
-| --- | --- | --- |
-| `is_identical` | `bool` | Whether the documents are textually identical |
-| `summary` | `ComparisonSummary` | Aggregate counts (added/removed/moved/modified pages, words, and ignored words) |
-| `differences` | `list[Difference]` | Structured difference entries (truncated by `max_differences`) |
-| `reliable` | `bool` | **True** when both documents have extractable text; **False** if one or both are scanned/image-only. When `reliable` is `False`, `is_identical` is always `False`. |
-| `warnings` | `list[str]` | Human-readable warnings (e.g. about missing text layer) |
-| `truncated` | `bool` | True when `max_differences` limited the returned entries |
-| `words_ignored` | `int` | Total number of tokens ignored in header/footer zones across both documents |
-| `_markup` | `list[_PageMarkup]` | Internal coordinate data for rendering |
+Words are considered in header/footer zones based on their visible coordinates after rotation:
 
-### `ComparisonSummary` attributes
+- Header zone: top `header_height` of visible page
+- Footer zone: bottom `footer_height` of visible page
+- Coordinates mapped using `page.rotation_matrix`
 
-- `old_pages` (`int`), `new_pages` (`int`)
-- `added_pages` (`int`), `removed_pages` (`int`), `moved_pages` (`int`), `modified_pages` (`int`)
-- `added_words` (`int`), `removed_words` (`int`), `differences` (`int`)
-- `words_ignored` (`int`) — total tokens excluded by header/footer filter rules
+#### Date/Time Patterns
 
-### Raised exceptions
+Supported formats:
+- ISO: `2025-06-27`, `2025/06/27`, `2025.06.27`
+- Numeric: `06/27/2025`, `6-27-25`, `27.06.2025`, `6/27/25`
+- Time: `06:08PM`, `06:08 PM`, `6:08 AM`, `18:08:30`, `18:08`
+- Month names: `Jun 27, 2025`, `27 June 2025`, `June 2025`
 
-- `InvalidPDFError` — file missing, not a PDF, or empty
-- `EncryptedPDFError` — PDF requires a password (subclass of `InvalidPDFError`)
-- `MissingTextLayerError` — retained for backward compatibility; `compare_pdfs` now returns a result with `reliable=False` instead of raising. See `ComparisonResult.reliable`.
-- `ConfigurationError` — unsupported option value
-- `InvalidOptionError` — invalid option parameter (e.g. negative zone height or invalid regex in `ignore_patterns`; subclass of `ConfigurationError`)
+Month names: English only (Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sep, Oct, Nov, Dec)
 
-## `highlight_differences(old_pdf, new_pdf, output_dir, result=None, options=None, style="highlight", include_report=False, overwrite=False)` → `HighlightOutputs`
+#### Page Number Patterns
 
-Writes highlighted copies and optionally a side-by-side report.
+- `Page 2`
+- `Page 2 of 10`
+- `2 of 10`
+- `- 2 -`, `– 2 –`, `— 2 —`
 
-- `overwrite` (`bool`) — If `False` (default), raises `OutputExistsError` if any output file already exists. If `True`, existing files are replaced.
-
-### `HighlightOutputs` attributes
-
-| Attribute | Type | Description |
-| --- | --- | --- |
-| `original` | `Path` | Path to highlighted original PDF |
-| `revised` | `Path` | Path to highlighted revised PDF |
-| `report` | `Path | None` | Path to difference report, or `None` if documents are identical |
-
-## `create_side_by_side_report(old_pdf, new_pdf, result, output_path, removed_color, added_color, style="highlight", overwrite=False)` → `Path | None`
-
-Creates the difference report PDF. Returns the path, or `None` if no differences.
-
-- `overwrite` (`bool`) — If `False` (default), raises `OutputExistsError` if the output path already exists.
-
-## Visual comparison
-
-```python
-from smart_pdf_compare import VisualComparisonOptions, compare_visual_pdfs
-
-result = compare_visual_pdfs(
-    "original.pdf",
-    "revised.pdf",
-    options=VisualComparisonOptions(dpi=144, pixel_threshold=8, output_mode="diff_image"),
-    output_dir="visual-output",
-)
-```
-
-`VisualComparisonOptions` fields: `dpi`, `pixel_threshold`, `min_changed_pixels`, `min_difference_ratio`, `output_mode` (`"none"`, `"side_by_side"`, `"diff_image"`).
-
-```python
-from smart_pdf_compare import compare_visual_documents
-
-batch = compare_visual_documents(paths, reference=0, ...)
-```
-
-Every non-reference PDF is compared against the designated reference PDF; visual pages are paired by index.
-
-## New exceptions (import from `smart_pdf_compare`)
-
-- `PDFComparisonError` — base class
-- `InvalidPDFError` — file missing, not a PDF, empty, or non-PDF file
-- `EncryptedPDFError` — PDF is encrypted and requires a password
-- `MissingTextLayerError` — no extractable text
-- `ConfigurationError` — unsupported option
-- `InvalidOptionError` — invalid option value (e.g. negative height or invalid regex)
-- `OutputExistsError(FileExistsError, PDFComparisonError)` — output file already exists
-- `InputOverwriteError` — refusing to overwrite an input file with output
-
-## Example
+#### Example
 
 ```python
 from smart_pdf_compare import compare_pdfs, ComparisonOptions
 
-result = compare_pdfs(
-    "orig.pdf",
-    "revised.pdf",
-    options=ComparisonOptions(
-        ignore_header_footer_dates=True,
-        ignore_header_footer_page_numbers=True,
-    ),
+options = ComparisonOptions(
+    ignore_header_footer_dates=True,
+    ignore_header_footer_page_numbers=True,
+    header_height=0.1,
+    footer_height=0.1
 )
 
-if not result.reliable:
-    print(f"Comparison unreliable: {result.warnings[0]}")
-else:
-    print(f"Identical: {result.is_identical}, Ignored words: {result.words_ignored}")
+result = compare_pdfs("old.pdf", "new.pdf", options=options)
+print(f"Words ignored: {result.summary.words_ignored}")
 ```
+
+Words ignored are excluded from:
+- Word diff counts
+- Highlights/annotations
+- Side-by-side reports
+- Page alignment similarity calculations
