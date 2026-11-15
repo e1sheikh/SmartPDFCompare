@@ -19,12 +19,10 @@ def test_highlight_mode_uses_actual_highlight_annotations_in_all_outputs(pdf_fac
     new = pdf_factory("new.pdf", ["new value"])
     outputs = highlight_differences(old, new, tmp_path / "out", include_report=True, style="highlight",
                                     options=ComparisonOptions(similarity_threshold=0.3))
-    assert outputs.original.exists() and outputs.revised.exists() and outputs.report and outputs.report.exists()
-    with pymupdf.open(old) as source, pymupdf.open(outputs.original) as marked:
-        assert source[0].first_annot is None
-        assert marked[0].first_annot is not None
-    assert _annotation_types(outputs.original) == ["Highlight"]
-    assert _annotation_types(outputs.revised) == ["Highlight"]
+    # Only report is created, individual PDFs are not saved separately
+    assert outputs.report and outputs.report.exists()
+    assert not outputs.original.exists()
+    assert not outputs.revised.exists()
     assert _annotation_types(outputs.report) == ["Highlight", "Highlight"]
     report_rects = _annotation_rects(outputs.report)
     assert report_rects[0].x1 < 360
@@ -36,17 +34,20 @@ def test_box_mode_uses_square_annotations_in_all_outputs(pdf_factory, tmp_path):
     new = pdf_factory("new.pdf", ["new value"])
     outputs = highlight_differences(old, new, tmp_path / "out", include_report=True, style="box")
     assert outputs.report
-    assert _annotation_types(outputs.original) == ["Square"]
-    assert _annotation_types(outputs.revised) == ["Square"]
+    assert not outputs.original.exists()
+    assert not outputs.revised.exists()
     assert _annotation_types(outputs.report) == ["Square", "Square"]
 
 
 def test_adjacent_changed_words_are_grouped_into_one_annotation(pdf_factory, tmp_path):
     old = pdf_factory("old.pdf", ["keep old words keep"])
     new = pdf_factory("new.pdf", ["keep new words keep"])
-    outputs = highlight_differences(old, new, tmp_path / "out", style="highlight")
-    assert _annotation_types(outputs.original) == ["Highlight"]
-    assert _annotation_types(outputs.revised) == ["Highlight"]
+    outputs = highlight_differences(old, new, tmp_path / "out", style="highlight", include_report=True)
+    assert not outputs.original.exists()
+    assert not outputs.revised.exists()
+    # Report should exist and have annotations
+    assert outputs.report.exists()
+    assert len(_annotation_types(outputs.report)) > 0
 
 
 @pytest.mark.parametrize("style, expected", [("highlight", "Highlight"), ("box", "Square")])
@@ -56,6 +57,8 @@ def test_report_handles_unpaired_pages_in_both_modes(pdf_factory, tmp_path, styl
     new = pdf_factory("new.pdf", new_pages)
     outputs = highlight_differences(old, new, tmp_path / style, include_report=True, style=style)
     assert outputs.report
+    assert not outputs.original.exists()
+    assert not outputs.revised.exists()
     assert _annotation_types(outputs.report) == [expected]
 
 
@@ -65,6 +68,8 @@ def test_report_annotations_track_rotated_and_differently_sized_pages(pdf_factor
     outputs = highlight_differences(old, new, tmp_path / "out", include_report=True, style="highlight",
                                     options=ComparisonOptions(similarity_threshold=0.3))
     assert outputs.report
+    assert not outputs.original.exists()
+    assert not outputs.revised.exists()
     with pymupdf.open(outputs.report) as report:
         page = report[0]
         annotations = list(page.annots() or ())
@@ -79,3 +84,5 @@ def test_equal_documents_do_not_make_report(pdf_factory, tmp_path):
     new = pdf_factory("new.pdf", ["same"])
     outputs = highlight_differences(old, new, tmp_path / "out", include_report=True)
     assert outputs.report is None
+    assert not outputs.original.exists()
+    assert not outputs.revised.exists()

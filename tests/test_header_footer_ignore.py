@@ -68,12 +68,10 @@ def test_footer_datetime_differs_option_off_vs_on(tmp_path):
 
     # Verify no annotations are written to output files
     out_dir = tmp_path / "highlight_out"
-    outputs = highlight_differences(old, new, out_dir, result=res_on)
-    with pymupdf.open(outputs.original) as doc_orig:
-        assert doc_orig[0].first_annot is None
-    with pymupdf.open(outputs.revised) as doc_rev:
-        assert doc_rev[0].first_annot is None
+    outputs = highlight_differences(old, new, out_dir, result=res_on, include_report=False)
     assert outputs.report is None
+    assert not outputs.original.exists()
+    assert not outputs.revised.exists()
 
 
 def test_body_date_changes_still_reported(tmp_path):

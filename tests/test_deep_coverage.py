@@ -192,21 +192,21 @@ def test_output_overwrite_safeguards(pdf_factory, tmp_path):
     old = pdf_factory("old.pdf", ["text a"])
     new = pdf_factory("new.pdf", ["text b"])
 
-    existing_file = out_dir / "original_highlighted.pdf"
+    existing_file = out_dir / "difference_report.pdf"
     existing_file.write_text("existing content")
 
-    # Should refuse overwrite with overwrite=False
+    # Should refuse overwrite with overwrite=False when report exists
     with pytest.raises(FileExistsError):
-        highlight_differences(old, new, out_dir, overwrite=False)
+        highlight_differences(old, new, out_dir, include_report=True, overwrite=False)
 
     # Should succeed with overwrite=True
-    outputs = highlight_differences(old, new, out_dir, overwrite=True)
-    assert outputs.original.exists()
+    outputs = highlight_differences(old, new, out_dir, include_report=True, overwrite=True)
+    assert outputs.report.exists()
 
     # Refuse to overwrite input files when an input file matches the target output path
-    clashing_old = pdf_factory("original_highlighted.pdf", ["source text"])
+    clashing_old = pdf_factory("difference_report.pdf", ["source text"])
     with pytest.raises(FileExistsError, match="Refusing to overwrite"):
-        highlight_differences(clashing_old, new, clashing_old.parent, overwrite=True)
+        highlight_differences(clashing_old, new, clashing_old.parent, include_report=True, overwrite=True)
 
 
 def test_visual_dimension_insignificant_tolerance(pdf_factory):

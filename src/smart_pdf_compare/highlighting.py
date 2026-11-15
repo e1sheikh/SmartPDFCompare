@@ -144,25 +144,13 @@ def highlight_differences(
     report_output = target / "difference_report.pdf"
 
     # Check overwrite
-    for path in (old_output, new_output, report_output if include_report else None):
-        if path and path.exists() and not overwrite:
-            raise FileExistsError(f"Output file already exists: {path}. Use overwrite=True to replace.")
-        if path and path.resolve() in (Path(old_pdf).resolve(), Path(new_pdf).resolve()):
-            raise FileExistsError(f"Refusing to overwrite input file: {path}")
+    if include_report:
+        if report_output.exists() and not overwrite:
+            raise FileExistsError(f"Output file already exists: {report_output}. Use overwrite=True to replace.")
+        if report_output.resolve() in (Path(old_pdf).resolve(), Path(new_pdf).resolve()):
+            raise FileExistsError(f"Refusing to overwrite input file: {report_output}")
 
-    with pymupdf.open(old_pdf) as old_document, pymupdf.open(new_pdf) as new_document:
-        for mark in comparison._markup:
-            if mark.old_page is not None:
-                _annotate(old_document[mark.old_page], mark.old_rects, removed_color, style)
-            if mark.new_page is not None:
-                _annotate(new_document[mark.new_page], mark.new_rects, added_color, style)
-        _safe_save(old_document, old_output)
-        _safe_save(new_document, new_output)
-
-    # Reopen output now: callers never receive a corrupt path silently.
-    with pymupdf.open(old_output), pymupdf.open(new_output):
-        pass
-
+    # Only create side-by-side report, do not save separate highlighted copies
     report = create_side_by_side_report(
         old_pdf,
         new_pdf,
@@ -173,6 +161,8 @@ def highlight_differences(
         style=style,
         overwrite=overwrite,
     ) if include_report and not comparison.is_identical else None
+
+    # Return dummy paths for backward compatibility
     return HighlightOutputs(old_output, new_output, report)
 
 
