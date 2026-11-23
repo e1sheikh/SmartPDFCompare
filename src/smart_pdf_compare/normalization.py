@@ -19,18 +19,22 @@ class NormalizationOptions:
     normalize_quotes: bool = True
 
 
-# Dash/minus variants to map to ASCII "-"
-_DASHES = str.maketrans({
-    "‐": "-",  # hyphen
-    "‑": "-",  # non-breaking hyphen
-    "‒": "-",  # figure dash
-    "–": "-",  # en dash
-    "—": "-",  # em dash
-    "―": "-",  # horizontal bar
-    "−": "-",  # minus sign
-    "﹘": "-",  # small em dash
-    "﹣": "-",  # small hyphen-minus
-    "－": "-",  # fullwidth hyphen-minus
+# Technical symbols commonly found in datasheets
+_SYMBOLS = str.maketrans({
+    "º": "°",   # masculine ordinal -> degree
+    "˚": "°",   # ring above -> degree
+    "℃": "°C",  # degree Celsius -> degree + C
+    "◦": "°",   # white bullet -> degree
+    "ϑ": "θ",   # theta variant -> theta
+    "ϴ": "θ",   # capital theta variant -> theta
+    "": "°",   # PUA degree (Symbol font)
+    "": "θ",   # PUA theta (Symbol font)
+    "": "μ",   # PUA micro (Symbol font)
+    "": "Ω",   # PUA omega (Symbol font)
+    "": "•",   # PUA bullet (Symbol/Wingdings font)
+    "●": "•",   # black circle bullet -> bullet
+    "﹮": "-",   # small hyphen-minus
+    "﹭": "-",   # small em dash
 })
 
 # Curly quotes/apostrophes to ASCII
@@ -45,15 +49,27 @@ _QUOTES = str.maketrans({
     "‟": '"',  # double high-reversed-9 quotation mark
 })
 
-# Technical symbols commonly found in datasheets
-_SYMBOLS = str.maketrans({
-    "º": "°",   # masculine ordinal -> degree
-    "˚": "°",   # ring above -> degree
-    "℃": "°C",  # degree Celsius -> degree + C
-    "◦": "°",   # white bullet -> degree
-    "ϑ": "θ",   # theta variant -> theta
-    "ϴ": "θ",   # capital theta variant -> theta
+# Dash/minus variants to map to ASCII "-"
+_DASHES = str.maketrans({
+    "‐": "-",  # hyphen
+    "‑": "-",  # non-breaking hyphen
+    "‒": "-",  # figure dash
+    "–": "-",  # en dash
+    "—": "-",  # em dash
+    "―": "-",  # horizontal bar
+    "−": "-",  # minus sign
+    "﹘": "-",  # small em dash
+    "﹣": "-",  # small hyphen-minus
+    "－": "-",  # fullwidth hyphen-minus
+    "⁃": "-",  # hyphen bullet
 })
+
+# Symbol/dingbat glyphs commonly glued to neighboring words by PDF generators
+# (PyMuPDF returns ``•China`` as one token).  Stripped from token edges during
+# normalization so they do not break word matching; the original text is kept
+# untouched for display/highlighting.  Technical symbols (degree, theta, micro,
+# omega) are deliberately NOT stripped — they are translated via _SYMBOLS.
+_LEADING_TRAILING_SYMBOLS = "•●"
 
 # Zero-width and soft hyphen characters to remove
 _ZERO_WIDTH_CHARS = {
@@ -76,8 +92,12 @@ _PUNCTUATION_EDGE = re.compile(r"^[^\w\s'-]+|[^\w\s'-]+$", re.UNICODE)
 
 def normalize_token(text: str, options: NormalizationOptions = NormalizationOptions()) -> str:
     """Return a comparison key while preserving numeric signs and contractions."""
+    # Strip fused symbol glyphs glued to word edges (e.g. ``•China`` -> ``China``).
+    # Original PDF text is kept untouched for display/highlighting.
+    value = text.strip(_LEADING_TRAILING_SYMBOLS)
+
     # Map technical symbols to canonical forms BEFORE NFKC
-    value = text.translate(_SYMBOLS)
+    value = value.translate(_SYMBOLS)
 
     # NFKC normalization, then handle special characters
     value = unicodedata.normalize("NFKC", value)
