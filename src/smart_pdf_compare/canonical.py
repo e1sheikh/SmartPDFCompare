@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import unicodedata
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import Tuple
 
 
 @dataclass(frozen=True)
@@ -66,10 +66,11 @@ class Canonicalizer:
         self.ignore_case = ignore_case
         # Symbol font PUA mappings (Symbol font code points to Unicode)
         self.symbol_pua = {
-            '': '°',  # degree
-            '': 'θ',  # theta
+            '': '°',  # degree (U+F0B0)
+            '': 'θ',  # theta (U+F071)
             '': 'μ',  # micro
             '': 'Ω',  # omega
+            '': '•',  # bullet (U+F0B7)
         }
 
     def canonicalize_char(self, char: str, font_name: str = "", is_line_end: bool = False) -> str:

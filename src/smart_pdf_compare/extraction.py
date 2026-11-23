@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Sequence
 
 import pymupdf
 
@@ -70,6 +70,12 @@ _PAGE_NUMBER_RE = re.compile(
     r"|[-–—]\s*\d+\s*[-–—]",
     re.IGNORECASE,
 )
+
+
+# Words that are purely structural/furniture and recur identically on every page
+# (e.g. "China - Germany - Korea - Singapore - United States" datasheet footers).
+_FURNITURE_MIN_PAGES = 0.8  # ignore text appearing on at least 80 % of pages
+_FURNITURE_MIN_PAGE_COUNT = 3  # only engage furniture detection for multi-page docs
 
 
 def open_pdf(path: str | Path) -> pymupdf.Document:
@@ -235,6 +241,63 @@ def extract_document(
             (dates/times, page numbers, extra regex patterns in headers/footers).
     """
     pages: list[ExtractedPage] = []
+
+    # Two-pass when page furniture is enabled: first gather zone words per page,
+    # then decide which zone text repeats across most pages and treat it as furniture.
+    furniture_keys: set[tuple[str, str]] = set()
+    per_page_zone: list[list[tuple[int, str, pymupdf.Rect, str]]] = []
+
+    if comparison_options is not None and comparison_options.ignore_repeated_page_furniture:
+        page_count = document.page_count
+        if page_count < _FURNITURE_MIN_PAGE_COUNT:
+            # Furniture detection is meaningless on 1–2 page docs; skip it entirely
+            # so single-page unit-test docs behave as before.
+            per_page_zone = None
+        else:
+            per_page_zone = [[] for _ in range(page_count)]
+        rot_matrix = None
+        for number, page in enumerate(document):
+            page_rect = page.rect
+            page_h = page_rect.height
+            rot_matrix = page.rotation_matrix
+            h_pts = comparison_options.header_height
+            h_pts = h_pts if h_pts > 1.0 else (page_h * h_pts)
+            f_pts = comparison_options.footer_height
+            f_pts = f_pts if f_pts > 1.0 else (page_h * f_pts)
+            header_limit = page_rect.y0 + h_pts
+            footer_limit = page_rect.y1 - f_pts
+            raw_words: Sequence[tuple] = page.get_text("words", sort=sort_words)
+            for idx, item in enumerate(raw_words):
+                text = str(item[4]).strip()
+                if not text:
+                    continue
+                vis_r = pymupdf.Rect(item[:4]) * rot_matrix
+                vis_mid_y = (vis_r.y0 + vis_r.y1) / 2
+                in_header = (h_pts > 0) and (
+                    vis_r.y1 <= header_limit or vis_mid_y <= header_limit
+                ) and vis_r.y0 >= page_rect.y0 - 1.0
+                in_footer = (f_pts > 0) and (
+                    vis_r.y0 >= footer_limit or vis_mid_y >= footer_limit
+                ) and vis_r.y1 <= page_rect.y1 + 1.0
+                if per_page_zone is not None:
+                    if in_header:
+                        per_page_zone[number].append((idx, normalize_token(text, options), vis_r, "header"))
+                    elif in_footer:
+                        per_page_zone[number].append((idx, normalize_token(text, options), vis_r, "footer"))
+
+        # Build furniture keyed by (normalized_text, zone)
+        if per_page_zone is not None:
+            n_pages = page_count
+            threshold = _FURNITURE_MIN_PAGES * n_pages
+            counts: dict[tuple[str, str], int] = {}
+            for page_items in per_page_zone:
+                seen_this_page: set[tuple[str, str]] = set()
+                for idx, text, _, zone in page_items:
+                    seen_this_page.add((text, zone))
+                for key in seen_this_page:
+                    counts[key] = counts.get(key, 0) + 1
+            furniture_keys = {key for key, count in counts.items() if count >= threshold}
+
     for number, page in enumerate(document):
         # sort=False preserves block/line reading order for multi-column pages
         raw_words: Sequence[tuple] = page.get_text("words", sort=sort_words)
@@ -242,6 +305,31 @@ def extract_document(
         ignored_indices: set[int] = set()
         if comparison_options is not None:
             ignored_indices = _find_ignored_word_indices(page, raw_words, comparison_options)
+            # Ignore repeated page-furniture words in the header/footer zones.
+            page_rect = page.rect
+            page_h = page_rect.height
+            rot_matrix = page.rotation_matrix
+            h_pts = comparison_options.header_height
+            h_pts = h_pts if h_pts > 1.0 else (page_h * h_pts)
+            f_pts = comparison_options.footer_height
+            f_pts = f_pts if f_pts > 1.0 else (page_h * f_pts)
+            header_limit = page_rect.y0 + h_pts
+            footer_limit = page_rect.y1 - f_pts
+            for idx, item in enumerate(raw_words):
+                text = str(item[4]).strip()
+                if not text:
+                    continue
+                vis_r = pymupdf.Rect(item[:4]) * rot_matrix
+                vis_mid_y = (vis_r.y0 + vis_r.y1) / 2
+                in_header = (h_pts > 0) and (
+                    vis_r.y1 <= header_limit or vis_mid_y <= header_limit
+                ) and vis_r.y0 >= page_rect.y0 - 1.0
+                in_footer = (f_pts > 0) and (
+                    vis_r.y0 >= footer_limit or vis_mid_y >= footer_limit
+                ) and vis_r.y1 <= page_rect.y1 + 1.0
+                zone = "header" if in_header else ("footer" if in_footer else None)
+                if zone and (normalize_token(text, options), zone) in furniture_keys:
+                    ignored_indices.add(idx)
 
         words = tuple(
             Word(
@@ -253,6 +341,8 @@ def extract_document(
             )
             for idx, item in enumerate(raw_words)
             if str(item[4]).strip() and idx not in ignored_indices
+            and normalize_token(str(item[4]), options)
         )
+
         pages.append(ExtractedPage(number, words, words_ignored=len(ignored_indices)))
     return pages

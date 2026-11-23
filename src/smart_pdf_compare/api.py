@@ -34,6 +34,7 @@ class ComparisonOptions:
     sort_words: bool = False  # False = native block/line order (preserves multi-column)
     ignore_header_footer_dates: bool = False
     ignore_header_footer_page_numbers: bool = False
+    ignore_repeated_page_furniture: bool = True  # Ignore identical header/footer boilerplate on every page
     header_height: float = 0.08
     footer_height: float = 0.08
     ignore_patterns: tuple[str, ...] = ()

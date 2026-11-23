@@ -19,7 +19,7 @@ from .visual import (
     compare_visual_pdfs,
 )
 
-__version__ = "0.2.2"
+__version__ = "0.2.6"
 
 __all__ = [
     "ChangeType", "ComparisonOptions", "ComparisonResult", "ComparisonSummary", "ConfigurationError",
